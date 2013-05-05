@@ -245,8 +245,9 @@ static inline void memcpy_aligned(void *to, const void *from, size_t len)
 #define PS_IOC_ATTACH_RX_DEVICE	1
 #define PS_IOC_DETACH_RX_DEVICE	2
 #define PS_IOC_RECV_CHUNK	3
-#define PS_IOC_SEND_CHUNK	4
-#define PS_IOC_SLOWPATH_PACKET	5
+#define PS_IOC_RECV_QUEUE	4
+#define PS_IOC_SEND_CHUNK	5
+#define PS_IOC_SLOWPATH_PACKET	6
 
 #ifndef __KERNEL__
 

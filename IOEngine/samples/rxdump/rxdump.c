@@ -212,7 +212,7 @@ void dump()
 		exit(1);
 	}
 
-	chunk.cnt =2 ; /* no batching */
+	chunk.cnt = 1; /* no batching */
 	chunk.recv_blocking = 1;
 
 	for (;;) {
