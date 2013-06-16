@@ -13,8 +13,69 @@
 #include <linux/udp.h>
 #include <linux/tcp.h>
 
+#include <signal.h>
+#include <sys/wait.h>
+#include <sys/time.h>
+
 #include "psio.h"
 
+int num_devices;
+struct ps_device devices[PS_MAX_DEVICES];
+
+struct ps_handle handle;
+int num_devices_attached;
+int devices_attached[PS_MAX_DEVICES];
+
+struct timeval startime;
+struct timeval endtime;
+
+void handle_signal(int signal)
+{
+	uint64_t total_rx_packets = 0;
+	uint64_t total_rx_bytes = 0;
+
+	int i;
+	int ifindex;
+
+	struct timeval subtime;
+
+	gettimeofday(&endtime, NULL);
+	timersub(&endtime, &startime, &subtime);
+
+	assert (num_devices_attached == 1);
+	for (i = 0; i < num_devices_attached; i++) {
+		ifindex = devices_attached[i];
+		total_rx_packets += handle.rx_packets[ifindex];
+		total_rx_bytes += handle.rx_bytes[ifindex];
+	}
+
+	printf("----------\n");
+	printf("%ld packets received, elapse time : %lds, Send Speed : %lf Mpps, %5.2f Gbps, Aveage Len. = %ld\n", 
+			total_rx_packets, subtime.tv_sec, 
+			(double)(total_rx_packets) / (double) (subtime.tv_sec*1000000+subtime.tv_usec),
+			(double)(total_rx_bytes*8) / (double) ((subtime.tv_sec*1000000+subtime.tv_usec) * 1000),
+			total_rx_bytes/total_rx_packets);
+
+	
+	for (i = 0; i < num_devices_attached; i++) {
+		char *dev = devices[devices_attached[i]].name;
+		ifindex = devices_attached[i];
+
+		if (handle.rx_packets[ifindex] == 0)
+			continue;
+
+		printf("  %s: ", dev);
+		
+		printf("RX %ld packets "
+				"(%ld chunks, %.2f packets per chunk)\n", 
+				handle.rx_packets[ifindex],
+				handle.rx_chunks[ifindex],
+				handle.rx_packets[ifindex] / 
+				  (double)handle.rx_chunks[ifindex]);
+	}
+
+	exit(0);
+}
 void dump_packet(char *buf, int len)
 {
 	struct ethhdr *ethh;
@@ -26,6 +87,7 @@ void dump_packet(char *buf, int len)
 	char outbuf[64];
 
 	ethh = (struct ethhdr *)buf;
+	/*
 	printf("%02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X ",
 			ethh->h_source[0],
 			ethh->h_source[1],
@@ -39,7 +101,7 @@ void dump_packet(char *buf, int len)
 			ethh->h_dest[3],
 			ethh->h_dest[4],
 			ethh->h_dest[5]);
-
+*/
 	/* IP layer */
 	switch (ntohs(ethh->h_proto)) {
 	case ETH_P_IP:
@@ -91,6 +153,7 @@ void dump_packet(char *buf, int len)
 	}
 
 	/* Transport layer */
+	/*
 	switch (proto_in_ip) {
 	case IPPROTO_TCP:
 		printf("TCP ");
@@ -113,18 +176,11 @@ void dump_packet(char *buf, int len)
 	default:
 		printf("protocol %d ", proto_in_ip);
 		goto done;
-	}
+	}*/
 
 done:
 	printf("len=%d\n", len);
 }
-
-int num_devices;
-struct ps_device devices[PS_MAX_DEVICES];
-
-struct ps_handle handle;
-int num_devices_attached;
-int devices_attached[PS_MAX_DEVICES];
 
 void print_usage(char *argv0)
 {
@@ -136,13 +192,13 @@ void print_usage(char *argv0)
 
 void parse_opt(int argc, char **argv)
 {
-	int i, j, ifindex= -1;
+	int i, j;
 
 	if (argc < 2)
 		print_usage(argv[0]);
 
 	for (i = 1; i < argc; i++) {
-		ifindex = -1;
+		int ifindex = -1;
 
 		for (j = 0; j < num_devices; j++) {
 			if (strcmp(argv[i], devices[j].name) != 0)
@@ -170,7 +226,6 @@ already_attached:
 	}
 
 	assert(num_devices_attached > 0);
-    printf("attached %d devices, ifindex = %d\n", num_devices_attached, ifindex);
 }
 
 void attach()
@@ -187,17 +242,19 @@ void attach()
 	for (i = 0; i < num_devices_attached; i++) {
 		struct ps_queue queue;
 
+		printf("num rx queues = %d\n", devices[devices_attached[i]].num_rx_queues);
 		queue.ifindex = devices_attached[i];
-
-		for (j = 0; j < devices[devices_attached[i]].num_rx_queues; j++) {
-			queue.qidx = j;
+		//for (j = 0; j < devices[devices_attached[i]].num_rx_queues; j++) {
+		//for (j = 0; j < 3; j++) {
+			queue.qidx = 3;
+			//queue.qidx = j;
 
 			ret = ps_attach_rx_device(&handle, &queue);
 			if (ret != 0) {
 				perror("ps_attach_rx_device");
 				exit(1);
 			}
-		}
+		//}
 	}
 }
 
@@ -212,11 +269,14 @@ void dump()
 		exit(1);
 	}
 
-	chunk.cnt = 1; /* no batching */
+	chunk.cnt = 128; /* no batching */
 	chunk.recv_blocking = 1;
+
+	gettimeofday(&startime, NULL);
 
 	for (;;) {
 		int ret = ps_recv_chunk(&handle, &chunk);
+		//printf("%d pkts from queue %d\n", chunk.cnt, chunk.queue.qidx);
 
 		if (ret < 0) {
 			if (errno == EINTR)
@@ -228,6 +288,11 @@ void dump()
 			assert(0);
 		}
 
+		if (ret > 0) {
+			printf("%d ", ret);
+		}
+
+/*
 		if (ret > 0) {
 			struct ps_packet packet;
 
@@ -242,8 +307,25 @@ void dump()
 
 			assert(ps_slowpath_packet(&handle, &packet) == 0);
 		}
-
+		printf("--> %d\n", chunk.queue.qidx);
 		chunk.cnt = 1;
+*/
+		//assert(chunk.cnt == 128);
+		/*
+		if (chunk.cnt != 128)
+			printf("(%d)", chunk.cnt);
+		int i, j=0;
+		for (i = 0; i < chunk.cnt; i ++) {
+			//assert(chunk.info[i].len != 0);
+			if (chunk.info[i].len == 0) {
+				printf("#%d", i);
+				j = 1;
+			}
+			//else printf("0");
+		}
+		if (j == 1)
+			printf("\n");
+*/
 	}
 }
 
@@ -254,6 +336,8 @@ int main(int argc, char **argv)
 		perror("ps_list_devices");
 		exit(1);
 	}
+
+	signal(SIGINT, handle_signal);
 
 	parse_opt(argc, argv);
 	attach();

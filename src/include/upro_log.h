@@ -9,7 +9,7 @@ typedef struct upro_log_sample_s {
 	int           loops;
 	char *        fmt;
 	char *        msg;
-	int           num;
+	double           num;
 } upro_log_sample_t;
 
 typedef struct upro_log_s {
@@ -23,7 +23,7 @@ typedef struct upro_log_s {
 
 void upro_log_init(upro_log_t *log);
 void upro_log_loop_marker(upro_log_t *log);
-void upro_log_msg(upro_log_t *log, const char *format, const char *msg, const int num);
+void upro_log_msg(upro_log_t *log, const char *format, const char *msg, const double num);
 void upro_log_timer(upro_log_t *log, const char *format, const char *msg, double timer, unsigned int nbytes, int loops);
 void upro_log_print(upro_log_t *log);
 #endif

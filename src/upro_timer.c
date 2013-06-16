@@ -55,7 +55,7 @@ int upro_timer_reset(upro_timer_t *timer)
 double upro_timer_get_total_time(upro_timer_t *timer)
 {
 	//returns millisecond as unit -- second * 1000
-	return (double)(timer->clocks * 1000) / (double) 1e9;
+	return (double)(timer->clocks) / (double) 1e6;
 }
 
 double upro_timer_get_elapsed_time(upro_timer_t *timer)
@@ -66,6 +66,6 @@ double upro_timer_get_elapsed_time(upro_timer_t *timer)
 	clock_gettime(CLOCK_REALTIME, &s);
 	n = (uint64_t)s.tv_sec * 1e9 + (uint64_t)s.tv_nsec;
 
-	return (double)((n - timer->start) * 1000) / (double) 1e9;
+	return (double)(n - timer->start) / (double) 1e6;
 }
 

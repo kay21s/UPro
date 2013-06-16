@@ -115,6 +115,26 @@ int ps_recv_chunk(struct ps_handle *handle, struct ps_chunk *chunk)
 	return cnt;
 }
 
+/* Receive chunk from a specified queue. */
+int ps_recv_queue(struct ps_handle *handle, struct ps_chunk *chunk)
+{
+	int cnt;
+
+	cnt = ioctl(handle->fd, PS_IOC_RECV_QUEUE, chunk);
+	if (cnt > 0) {
+		int i;
+		int ifindex = chunk->queue.ifindex;
+
+		handle->rx_chunks[ifindex]++;
+		handle->rx_packets[ifindex] += cnt;
+
+		for (i = 0; i < cnt; i++)
+			handle->rx_bytes[ifindex] += chunk->info[i].len;
+	}
+
+	return cnt;
+}
+
 /* Send the given chunk to the modified driver. */
 int ps_send_chunk(struct ps_handle *handle, struct ps_chunk *chunk)
 {

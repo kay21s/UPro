@@ -8,8 +8,10 @@
 
 extern upro_config_t *config;
 
+#define LOG_PRINT 1
+
 // Add "num" variable based on original version
-void upro_sample_set_msg(upro_log_sample_t *sample, const char *fmt, const char *msg, int num)
+void upro_sample_set_msg(upro_log_sample_t *sample, const char *fmt, const char *msg, double num)
 {
 	sample->isMsg = 1;
 
@@ -66,12 +68,19 @@ void upro_log_loop_marker(upro_log_t *log)
 {
 	log->loop_timers = 0;
 	log->loops ++;
+#if defined(LOG_PRINT)
+	printf("\n---------------------------%d\n", log->loops);
+#endif
 }
 
-void upro_log_msg(upro_log_t *log, const char *format, const char *msg, const int num)
+void upro_log_msg(upro_log_t *log, const char *format, const char *msg, const double num)
 {
+#if defined(LOG_PRINT)
+	printf(format, msg, num);
+#else
 	upro_sample_set_msg(&(log->samples[log->idx ++]), format, msg, num);
 	log->loop_entries ++;
+#endif
 }
 
 void upro_log_timer(upro_log_t *log, const char *format, const char *msg, double timer, unsigned int nbytes, int loops)

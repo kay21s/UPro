@@ -7,8 +7,10 @@
 #include <sys/syscall.h>
 #include <string.h>
 #include <sched.h>
+#include <assert.h>
+#include <linux/ip.h>
 
-#include "upro_forwarder.h"
+#include "upro_context.h"
 #include "upro_config.h"
 #include "upro_memory.h"
 #include "upro_macros.h"
@@ -16,15 +18,35 @@
 #include "upro_batch.h"
 #include "psio.h"
 
-int upro_forwarder_init(upro_forwarder_context_t *context)
+extern pthread_key_t worker_batch_struct;
+extern upro_config_t *config;
+extern pthread_mutex_t mutex_worker_init;
+
+int upro_forwarder_init(upro_forwarder_context_t *context, struct ps_chunk *chunk, struct ps_handle *handle)
 {
 	upro_batch_t *batch = context->batch;
 	unsigned long mask = 1 << context->core_id;
 
+	/* set schedule affinity */
 	if (sched_setaffinity(0, sizeof(unsigned long), (cpu_set_t *)&mask) < 0) {
 		upro_err("Err set affinity in forwarder\n");
-		exit(0);
+		assert(0);
 	}
+
+	/* set schedule policy */
+	struct sched_param param;
+	param.sched_priority = 99;
+	pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+
+	batch->forwarder_buf_id = -1;
+	
+	/* Initialize ioengine */
+	assert(ps_init_handle(handle) == 0);
+	assert(ps_alloc_chunk(handle, chunk) == 0);
+	chunk->recv_blocking = 1;
+	chunk->queue.ifindex = config->server_ifindex;
+	//chunk->queue.ifindex = config->client_ifindex;
+	//chunk->queue.qidx = queue_id;
 
 	pthread_setspecific(worker_batch_struct, (void *)batch);
 	__builtin_prefetch(batch);
@@ -38,108 +60,134 @@ int upro_forwarder_init(upro_forwarder_context_t *context)
 }
 
 /* This function trigger write event of all the jobs in this batch */
-int upro_forwarder_forwarding(int queue_id)
+int upro_forwarder_forwarding(int queue_id, struct ps_chunk *chunk, struct ps_handle *handle)
 {
-	/* static variables */
-	static struct ps_chunk chunk;
-	static struct ps_handle handle;
-	static int chunk_init = 0;
-
-	char *base;
-	hammer_job_t *this_job;
-	upro_batch_t *batch = upro_sched_get_batch_struct(); 
+	int i, this_cnt, total_cnt;
+	upro_job_t *this_job;
+	upro_batch_t *batch = pthread_getspecific(worker_batch_struct);
 	upro_batch_buf_t *buf = &(batch->buf[batch->forwarder_buf_id]);
 
-	/* Only run on the first time */
-	if (chunk_init == 0) {
-		assert(ps_init_handle(&handle) == 0);
-		assert(ps_alloc_chunk(&handle, &chunk) == 0);
+	// printf("<<< [Forwarder %d] > gets %d packets to forward\n", queue_id, buf->job_num);
+	if (buf->job_num == 0)	return -1;
 
-		chunk.recv_blocking = 1;
-		chunk.queue.ifindex = config->client_ifindex;
-		chunk.queue.qidx = queue_id;
+	chunk->queue.qidx = queue_id;
+	total_cnt = buf->job_num;
 
-		chunk_init = 1;
+	while (total_cnt > 0) {
+		this_cnt = total_cnt > PS_MAX_CHUNK_SIZE ? PS_MAX_CHUNK_SIZE : total_cnt;
+		total_cnt -= this_cnt;
+
+		for (i = 0; i < this_cnt; i ++) {
+			this_job = &(buf->job_list[i]);
+
+			chunk->info[i].offset = i * PS_MAX_PACKET_SIZE;
+			chunk->info[i].len = this_job->pkt_length + this_job->hdr_length;
+			//printf("%d ", this_job->pkt_length);
+
+			/* Modify the ip header length, we assume it is ipv4 */
+			struct iphdr *iph = (struct iphdr *)(this_job->pkt_ptr);
+			iph->tot_len = this_job->pkt_length + this_job->hdr_length - 14;
+			/* 14 is the ether header length, tot_len = IP + UDP + RTP */
+
+			memcpy_aligned(chunk->buf + chunk->info[i].offset,
+					this_job->hdr_ptr,
+					this_job->hdr_length);
+			memcpy_aligned(chunk->buf + chunk->info[i].offset + this_job->hdr_length,
+					this_job->pkt_ptr,
+					this_job->pkt_length);
+		}
+
+		chunk->cnt = this_cnt;
+		assert(ps_send_chunk(handle, chunk) > 0);
 	}
 
-	/* get the base pointer for offset calculation */
-	base = (buf->job_list[0])->pkt_ptr;
-
-	for (i = 0; i < buf->job_num; i ++) {
-		this_job = &(buf->job_list[i]);
-
-		// TODO: chunk.info[i].offset = this_job->pkt_ptr - base;
-		chunk.info[i].offset = i * PS_MAX_PACKET_SIZE;
-		chunk.info[i].len = this_job->pkt_length;
-
-		/* Modify the ip header length, we assume it is ipv4 */
-		struct iphdr *iph = (struct iphdr *)this_job->pkt_ptr;
-		iph->tot_len = this_job->pkt_length;
-
-		memcpy_aligned(chunk.buf + chunk.info[i].offset,
-						this_job->pkt_ptr,
-						this_job->pkt_length);
-	}
-
-	assert(ps_send_chunk(&handle, chunk) > 0);
+	//printf("<<< [Forwarder %d] finished forwarding %d\n", queue_id, batch->forwarder_buf_id);
 
 	return 0;
 }
-
-int upro_forwarder_refresh_buffer()
+inline int upro_forwarder_refresh_buffer(upro_batch_buf_t *buf)
 {
-	upro_batch_t *batch = upro_sched_get_batch_struct(); 
-
 	/* refresh collector_buf  */
-	batch->collector_buf->job_num = 0;
-	batch->collector_buf->buf_length = 0;
-	assert(batch->collector_buf->job_list == NULL);
+	buf->job_num = 0;
+	buf->buf_length = 0;
+	buf->hdr_length = 0;
 
 	return 0;
 }
 
-int upro_forwarder_give_available_buffer()
+int upro_forwarder_give_available_buffer(int queue_id)
 {
-	upro_batch_t *batch = upro_sched_get_batch_struct(); 
+	upro_batch_t *batch = pthread_getspecific(worker_batch_struct);
+	upro_batch_buf_t *buf = &(batch->buf[batch->forwarder_buf_id]);
 	
-	// debug
-	assert(batch->available_buf_id == -1);
-
 	/* Make the buffer looks like new */
-	upro_forwarder_refresh_buffer();
+	upro_forwarder_refresh_buffer(buf);
 
 	/* tell the collector that the buffer is available */
+#if defined(USE_LOCK)
 	pthread_mutex_lock(&(batch->mutex_available_buf_id));
-	batch->available_buf_id = batch->forwarder_buf_id;
+	if (batch->available_buf_id[0] == -1) {
+		batch->available_buf_id[0] = batch->forwarder_buf_id;
+	} else if (batch->available_buf_id[1] == -1) {
+		batch->available_buf_id[1] = batch->forwarder_buf_id;
+	} else {
+		printf("Three buffers available\n");
+		assert(0);
+	}
 	pthread_mutex_unlock(&(batch->mutex_available_buf_id));
+
+	//printf("<<< [Forwarder %d] < give available buffer %d\n", queue_id, batch->forwarder_buf_id);
 
 	pthread_mutex_lock(&(batch->mutex_forwarder_buf_id));
 	batch->forwarder_buf_id = -1;
 	pthread_mutex_unlock(&(batch->mutex_forwarder_buf_id));
+#else
+	pthread_mutex_lock(&(batch->mutex_available_buf_id));
+	if (batch->available_buf_id[0] == -1) {
+		batch->available_buf_id[0] = batch->forwarder_buf_id;
+	} else if (batch->available_buf_id[1] == -1) {
+		batch->available_buf_id[1] = batch->forwarder_buf_id;
+	} else {
+		printf("Three buffers available\n");
+		assert(0);
+	}
+	pthread_mutex_unlock(&(batch->mutex_available_buf_id));
+
+	batch->forwarder_buf_id = -1;
+#endif
 
 	return 0;
 }
 
 int upro_forwarder_get_buffer()
 {
-	upro_batch_t *batch = upro_sched_get_batch_struct(); 
+	upro_batch_t *batch = pthread_getspecific(worker_batch_struct);
 
 	/* wait for the gpu worker to give me the buffer ~~ */
-	while(batch->forwarder_buf_id == -1)
-		;
-	
+	while(batch->forwarder_buf_id == -1) {
+		//;
+		usleep(1);
+	}
+
 	return 0;
 }
 
-void upro_forwarder_main(upro_forwarder_context_t *context)
+void *upro_forwarder_main(upro_forwarder_context_t *context)
 {
-	upro_forwarder_init(context);
+	//int queue_id = (context->core_id - 1) >> 1;
+	int queue_id = context->queue_id;
+	/* static variables */
+	struct ps_chunk chunk;
+	struct ps_handle handle;
+
+	upro_forwarder_init(context, &chunk, &handle);
+	printf("Forwarder on core %d is sending via queue %d ...\n", context->core_id, queue_id);
 
 	while(1) {
 		upro_forwarder_get_buffer();
-
-		upro_forwarder_forwarding();
-
-		upro_forwarder_give_available_buffer();
+		upro_forwarder_forwarding(queue_id, &chunk, &handle);
+		upro_forwarder_give_available_buffer(queue_id);
 	}
+
+	exit(0);
 }

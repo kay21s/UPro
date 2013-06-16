@@ -3,8 +3,9 @@
 
 typedef struct upro_transworker_context_s {
 	int core_id;
+	int initialized;
 } upro_transworker_context_t;
 
-int upro_transworker_main(upro_transworker_context_t *context);
+void upro_transworker_main(upro_transworker_context_t *context);
 
 #endif

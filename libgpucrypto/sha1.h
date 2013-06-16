@@ -1,5 +1,6 @@
 #ifndef __SHA1_H__
 #define __SHA1_H__
+#include <stdint.h>
 
 typedef struct hash_digest
 {

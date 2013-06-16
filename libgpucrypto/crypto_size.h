@@ -19,12 +19,10 @@
 #define AES_IV_SIZE		16  // 16 bytes
 
 #define PKT_OFFSET_SIZE	4   // 32 bits = 4 bytes
-#define PKT_LENGTH_SIZE	4   // 32 bits = 4 bytes
+#define PKT_LENGTH_SIZE	2   // 16 bits = 2 bytes
 
 #define HMAC_KEY_SIZE	20  // 160 bits
 #define HMAC_TAG_SIZE	10  // output of SHA1 is 80 bits
-
-#define SHA1_OUTPUT_SIZE	20  // output of SHA1 is 20 bytes
 
 /* CIPHER SET */
 #define AES_CTR_HMAC_SHA1	0x1 // Currently, we have this

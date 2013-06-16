@@ -1,9 +1,5 @@
 CC = gcc
 
-CFLAGS = -Wall -g -D__USE_GNU -D_GNU_SOURCE -DUPRO_MALLOC
-LIBS = -lrt -lpthread -L../IOEngine/lib -lpsio
-# LIBS += -L../libgpucrypto/lib -lgpucrypto 
-#
 ################################################################
 # OS Name (Linux or Darwin)
 OSUPPER = $(shell uname -s 2>/dev/null | tr [:lower:] [:upper:])
@@ -31,6 +27,8 @@ DARWIN = $(strip $(findstring DARWIN, $(OSUPPER)))
 CUDA_PATH       ?= /usr/local/cuda-5.0
 CUDA_INC_PATH   ?= $(CUDA_PATH)/include
 CUDA_BIN_PATH   ?= $(CUDA_PATH)/bin
+CUDA_SDK_DIR = /home/$(USER)/NVIDIA_CUDA-5.0_Samples/
+
 ifneq ($(DARWIN),)
   CUDA_LIB_PATH  ?= $(CUDA_PATH)/lib
 else
@@ -45,10 +43,9 @@ endif
 NVCC            ?= $(CUDA_BIN_PATH)/nvcc
 
 # CUDA code generation flags
-GENCODE_SM10    := -gencode arch=compute_10,code=sm_10
 GENCODE_SM20    := -gencode arch=compute_20,code=sm_20
 GENCODE_SM30    := -gencode arch=compute_30,code=sm_30 -gencode arch=compute_35,code=sm_35
-GENCODE_FLAGS   := $(GENCODE_SM10) $(GENCODE_SM20) $(GENCODE_SM30)
+GENCODE_FLAGS   := $(GENCODE_SM20) $(GENCODE_SM30)
 
 # OS-specific build flags
 ifneq ($(DARWIN),) 
@@ -82,9 +79,13 @@ endif
 
 
 # Common includes and paths for CUDA
-NVCCINCLUDES      := -I$(CUDA_INC_PATH) -I. -I/usr/local/cuda-5.0/samples/common/inc/
+NVCCINCLUDES      := -I$(CUDA_INC_PATH) -I. -I$(CUDA_SDK_DIR)common/inc/
 
 ################################################################
+
+CFLAGS = -Wall -g -D__USE_GNU -D_GNU_SOURCE -DUPRO_MALLOC -DDEBUG_0 -DTRANSFER_SEPERATE
+LIBS = -lrt -lpthread -L../IOEngine/lib -lpsio
+LIBS += -L../libgpucrypto/lib -lgpucrypto 
 
 HEADER_DIR = ./include 
 IOENGINE_DIR = ../IOEngine/include
@@ -111,7 +112,8 @@ $(OBJECT_DIR):
 
 
 $(OBJECT_DIR)/%.o : %.c
-	$(CC) $(CFLAGS) -I $(HEADER_DIR) -I $(CUDA_INC_PATH) -I $(IOENGINE_DIR) -I $(LIBCRYPTO_DIR) -c $< -o $@
+	$(CC) $(CFLAGS) -I $(HEADER_DIR) -I $(IOENGINE_DIR) -I $(LIBCRYPTO_DIR) $(NVCCINCLUDES) -c $< -o $@
+# -I $(CUDA_INC_PATH) -I $(LIBCRYPTO_DIR)
 
 .PHONY : clean
 clean:

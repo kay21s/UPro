@@ -1,40 +1,122 @@
-GPUCRYPTO_DIR = ../
+CC = gcc
 
-include ../Makefile.in
+CFLAGS = -Wall -g -O2
+#-D__USE_GNU -D_GNU_SOURCE 
+LIBS = -lrt -lpthread -L../lib -lgpucrypto
 
-#gpucrypto config
-GPUCRYPTO_LIBDIR = -L../lib/
-GPUCRYPTO_INCDIR = -I../
-GPYCRYPTO_LIB = -lgpucrypto
+#OPENSSL_DIR = ../openssl-1.0.1c
+#ifneq ($(OPENSSL_DIR), )
+#	OPENSSL_LIBDIR = -L$(OPENSSL_DIR)/lib64
+#	OPENSSL_INCDIR = -I$(OPENSSL_DIR)/include
+#endif
 
-LIBDIR = $(OPENSSL_LIBDIR) \
-	 $(CUDA_LIBDIR) \
-	 $(GPUCRYPTO_LIBDIR)
+################################################################
+# OS Name (Linux or Darwin)
+OSUPPER = $(shell uname -s 2>/dev/null | tr [:lower:] [:upper:])
+OSLOWER = $(shell uname -s 2>/dev/null | tr [:upper:] [:lower:])
 
-LIBS =  -lpthread $(CUDA_LIBS) $(OPENSSL_LIB) $(GPYCRYPTO_LIB)
+# Flags to detect 32-bit or 64-bit OS platform
+OS_SIZE = $(shell uname -m | sed -e "s/i.86/32/" -e "s/x86_64/64/")
+OS_ARCH = $(shell uname -m | sed -e "s/i386/i686/")
 
-INC += 	$(GPUCRYPTO_INCDIR)
+# These flags will override any settings
+ifeq ($(i386),1)
+	OS_SIZE = 32
+	OS_ARCH = i686
+endif
 
-TARGET_DIR = ../bin/
-OBJ_DIR = ../objs/
-TARGET_FILES = rsa_test aes_test sha_test
-TARGETS = $(addprefix $(TARGET_DIR), $(TARGET_FILES))
-OBJS = $(addprefix $(OBJ_DIR), $(addsuffix .o, $(TARGET_FILES))) $(OBJ_DIR)common.o
+ifeq ($(x86_64),1)
+	OS_SIZE = 64
+	OS_ARCH = x86_64
+endif
 
-all: $(TARGETS)
+# Flags to detect either a Linux system (linux) or Mac OSX (darwin)
+DARWIN = $(strip $(findstring DARWIN, $(OSUPPER)))
 
-$(TARGET_DIR):
-	mkdir $(TARGET_DIR)
+# Location of the CUDA Toolkit binaries and libraries
+CUDA_PATH       ?= /usr/local/cuda-5.0
+CUDA_INC_PATH   ?= $(CUDA_PATH)/include
+CUDA_BIN_PATH   ?= $(CUDA_PATH)/bin
+ifneq ($(DARWIN),)
+  CUDA_LIB_PATH  ?= $(CUDA_PATH)/lib
+else
+  ifeq ($(OS_SIZE),32)
+    CUDA_LIB_PATH  ?= $(CUDA_PATH)/lib
+  else
+    CUDA_LIB_PATH  ?= $(CUDA_PATH)/lib64
+  endif
+endif
 
-$(OBJ_DIR):
-	mkdir $(OBJ_DIR)
+# Common binaries
+NVCC            ?= $(CUDA_BIN_PATH)/nvcc
 
-$(TARGET_DIR)% : $(OBJ_DIR)%.o |$(TARGET_DIR) $(OBJ_DIR) ../lib/libgpucrypto.a $(OBJ_DIR)common.o
-	$(CC) -o $@ $< $(CFLAGS) $(LIBS) $(LIBDIR) $(OBJ_DIR)common.o
+# CUDA code generation flags
+GENCODE_SM20    := -gencode arch=compute_20,code=sm_20
+GENCODE_SM30    := -gencode arch=compute_30,code=sm_30 -gencode arch=compute_35,code=sm_35
+GENCODE_FLAGS   := $(GENCODE_SM20) $(GENCODE_SM30)
 
-$(OBJ_DIR)%.o : %.cc
-	$(CC) $(CFLAGS) $(INC) $(NVINC) -c $< -o $@
+# OS-specific build flags
+ifneq ($(DARWIN),) 
+      LDFLAGS   := -Xlinker -rpath $(CUDA_LIB_PATH) -L$(CUDA_LIB_PATH) -lcudart
+      CCFLAGS   := -arch $(OS_ARCH) 
+else
+  ifeq ($(OS_SIZE),32)
+      LDFLAGS   := -L$(CUDA_LIB_PATH) -lcudart
+      CCFLAGS   := -m32
+  else
+      LDFLAGS   := -L$(CUDA_LIB_PATH) -lcudart
+      CCFLAGS   := -m64
+  endif
+endif
+
+# OS-architecture specific flags
+ifeq ($(OS_SIZE),32)
+      NVCCFLAGS := -m32
+else
+      NVCCFLAGS := -m64
+endif
+
+# Debug build flags
+ifeq ($(dbg),1)
+      CCFLAGS   += -g
+      NVCCFLAGS += -g -G
+      TARGET    := debug
+else
+      TARGET    := release
+endif
+
+
+# Common includes and paths for CUDA
+NVCCINCLUDES      := -I$(CUDA_INC_PATH) -I. -I/usr/local/cuda-5.0/samples/common/inc/
+
+################################################################
+
+HEADER_DIR = ../
+LIBCRYPTO_DIR = ../libgpucrypto
+OBJECT_DIR = objs
+TARGET_DIR = .
+
+TARGET_FILE = run
+TARGET = $(addprefix $(TARGET_DIR)/, $(TARGET_FILE))
+
+SOURCE_FILES = $(wildcard *.c)
+HEADER_FILES = $(wildcard *.h) $(wildcard *.h)
+OBJECT_FILE = $(SOURCE_FILES:.c=.o)
+
+OBJECT = $(addprefix $(OBJECT_DIR)/, $(OBJECT_FILE))
+
+all: $(TARGET)
+
+$(TARGET): $(OBJECT) | $(TARGET_DIR) $(OBJECT_DIR)
+	$(CC) -g  $(OBJECT) -o $@ $(LIBS) $(LDFLAGS)
+
+$(OBJECT_DIR):
+	mkdir $(OBJECT_DIR)
+
+
+$(OBJECT_DIR)/%.o : %.c
+	$(CC) $(CFLAGS) -I $(HEADER_DIR) -I $(CUDA_INC_PATH) -I $(LIBCRYPTO_DIR) -c $< -o $@
 
 .PHONY : clean
 clean:
-	rm -f $(TARGETS) $(OBJS)
+	rm -rf $(TARGET) $(OBJECT)

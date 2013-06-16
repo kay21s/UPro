@@ -1036,6 +1036,7 @@ int ixgbe_xmit_batch(struct ixgbe_ring *tx_ring,
 	}
 
 	cnt = min(num_to_xmit, left);
+	//printk("in ixgbe_xmit_batch : num_to_xmit = %d, left = %d, cnt = %d\n", num_to_xmit, left, cnt);
 	if (cnt == 0)
 		return cnt;
 
@@ -7337,6 +7338,9 @@ int ps_mmap(struct file *filp, struct vm_area_struct *vma)
 		ps_vma_open(vma);
 	}
 
+	printk("In ps_mmap, filp = %p, context = %p, num_bufs = %d, err =%d\n", filp, context, context->num_bufs, err);
+
+
 	return err;
 }
 
@@ -7395,6 +7399,7 @@ int ps_attach_rx_device(struct ps_context *context,
 	struct ixgbe_adapter *adapter;
 	struct ixgbe_ring *rx_ring;
 
+
 	if (copy_from_user(&queue, queue_usr, sizeof(struct ps_queue)))
 		return -EFAULT;
 
@@ -7423,6 +7428,7 @@ int ps_attach_rx_device(struct ps_context *context,
 		return -EBUSY;
 	}
 
+
 	rx_ring->wq = &context->wq;
 
 	/* Disable the RX interrupt
@@ -7433,6 +7439,8 @@ int ps_attach_rx_device(struct ps_context *context,
 
 	context->rx_rings[context->num_attached] = rx_ring;
 	context->num_attached++;
+
+	printk("Attach rx device, context = %p, ifindex, queue id = %d:%d, num_attached = %d\n", context, queue.ifindex, queue.qidx, context->num_attached);
 
 	return 0;
 }
@@ -7642,14 +7650,12 @@ next:
 
 int ps_recv_queue(struct ps_context *context, struct ps_chunk __user *chunk_usr)
 {
+	struct ps_chunk chunk;
 	struct ixgbe_adapter *adapter;
 	struct ixgbe_ring *rx_ring;
 
 	char *kbuf = NULL;
-
-	int ret;
-	int i;
-	int offset;
+	int ret, tmp, i, offset;
 
 	DEFINE_WAIT(wait);
 
@@ -7666,6 +7672,19 @@ int ps_recv_queue(struct ps_context *context, struct ps_chunk __user *chunk_usr)
 			chunk.cnt * sizeof(struct ps_pkt_info)))
 		return -EFAULT;
 
+	for (i = 0; i < context->num_bufs; i++)
+		if (context->ubufs[i] == chunk.buf) {
+			kbuf = context->kbufs[i];
+			break;
+		}
+
+	if (!kbuf)
+		return -EFAULT;
+
+	offset = ALIGN((u64)kbuf, 64) - (u64)kbuf;
+
+
+	/* Get the exact rx_ring */
 	if (chunk.queue.ifindex < 0 || chunk.queue.ifindex >= adapters_found) {
 		if (printk_ratelimit()) printk(KERN_NOTICE "Out of range: ifindex %d must be in the range [%d, %d].\n",
 							   chunk.queue.ifindex, 0, adapters_found);
@@ -7681,18 +7700,12 @@ int ps_recv_queue(struct ps_context *context, struct ps_chunk __user *chunk_usr)
 	}
 
 	rx_ring = &adapter->rx_ring[chunk.queue.qidx];
-	
+	if (unlikely(!rx_ring || !rx_ring->desc)) {
+		printk(KERN_NOTICE "rx_ring does not exist\n");
+		return -EINVAL;
+	}
 
-	for (i = 0; i < context->num_bufs; i++)
-		if (context->ubufs[i] == chunk.buf) {
-			kbuf = context->kbufs[i];
-			break;
-		}
 
-	if (!kbuf)
-		return -EFAULT;
-
-	offset = ALIGN((u64)kbuf, 64) - (u64)kbuf;
 
 retry:
 	if (chunk.recv_blocking)
@@ -7761,22 +7774,21 @@ int ps_recv_chunk(struct ps_context *context, struct ps_chunk __user *chunk_usr)
 
 	DEFINE_WAIT(wait);
 
-	if (copy_from_user(&chunk, chunk_usr, sizeof(chunk)))
+	if (copy_from_user(&chunk, chunk_usr, sizeof(chunk))) {
+		printk(KERN_ERR "copy from user error\n");
 		return -EFAULT;
-	
-	/*
-	printk("ps_recv_chunk() called %d %p %p\n",
-			chunk.cnt, chunk.info, chunk.buf);
-	*/
+	}
 
 	if (chunk.cnt <= 0 || chunk.cnt > PS_MAX_CHUNK_SIZE) {
-		if (printk_ratelimit()) printk(KERN_NOTICE "invalid chunk size.\n");
+		if (printk_ratelimit()) printk(KERN_ERR "invalid chunk size.\n");
 		return -EINVAL;
 	}
 
 	if (!access_ok(VERIFY_WRITE, chunk.info, 
-			chunk.cnt * sizeof(struct ps_pkt_info)))
+			chunk.cnt * sizeof(struct ps_pkt_info))) {
+		printk(KERN_ERR "access ok error\n");
 		return -EFAULT;
+	}
 
 	for (i = 0; i < context->num_bufs; i++)
 		if (context->ubufs[i] == chunk.buf) {
@@ -7784,11 +7796,13 @@ int ps_recv_chunk(struct ps_context *context, struct ps_chunk __user *chunk_usr)
 			break;
 		}
 
-	if (!kbuf)
+	if (!kbuf) {
+		printk(KERN_ERR "kbuf error\n");
 		return -EFAULT;
+	}
 
 	if (context->num_attached == 0) {
-		if (printk_ratelimit()) printk(KERN_WARNING "no attached devices.\n");
+		if (printk_ratelimit()) printk(KERN_ERR "no attached devices.\n");
 		return -EINVAL;
 	}
 
@@ -7834,7 +7848,7 @@ retry:
 		finish_wait(&context->wq, &wait);
 
 		if (signal_pending(current)) {
-			/* printk("signal pending!!!\n"); */
+			printk("signal pending!!!\n");
 			return -EINTR;
 		}
 		goto retry;
@@ -7857,8 +7871,12 @@ found:
 
 	context->next_ring = (context->next_ring + 1) % context->num_attached;
 
+	//printk("%p ps_recv_chunk() called %d %p %p, num_attached %d, queue id(u/s) = %d/%d\n",
+	//		context, chunk.cnt, chunk.info, chunk.buf, context->num_attached, chunk_usr->queue.qidx, rx_ring->queue_index);
+
 	put_user(rx_ring->adapter->bd_number, &chunk_usr->queue.ifindex);
 	put_user(rx_ring->queue_index, &chunk_usr->queue.qidx);
+
 	return ret;
 }
 
@@ -7873,8 +7891,10 @@ int ps_send_chunk(struct ps_context *context, struct ps_chunk __user *chunk_usr)
 	int ret;
 	int i;
 
-	if (copy_from_user(&chunk, chunk_usr, sizeof(chunk)))
+
+	if (copy_from_user(&chunk, chunk_usr, sizeof(chunk))) {
 		return -EFAULT;
+	}
 	
 	if (chunk.cnt <= 0 || chunk.cnt > PS_MAX_CHUNK_SIZE) {
 		if (printk_ratelimit()) printk(KERN_NOTICE "Out of range: cnt %d must be in the range [%d, %d].\n",
@@ -7901,9 +7921,6 @@ int ps_send_chunk(struct ps_context *context, struct ps_chunk __user *chunk_usr)
 	ret = copy_from_user(context->info, chunk.info,
 			chunk.cnt * sizeof(struct ps_pkt_info));
 	if (ret) {
-		printk(KERN_ERR "copy_from_user(1) failed - %ld requested %d failed.\n",
-			        chunk.cnt * sizeof(struct ps_pkt_info),
-			        ret);
 		return -EFAULT;
 	}
 
@@ -7913,9 +7930,11 @@ int ps_send_chunk(struct ps_context *context, struct ps_chunk __user *chunk_usr)
 			break;
 		}
 
-	if (!kbuf)
+	if (!kbuf) {
 		return -EFAULT;
+	}
 
+	printk("-----in ps_send_chunk, queue_id = %d\n", chunk.queue.qidx);
 	spin_lock_bh(&tx_ring->lock);
 	ret = ixgbe_xmit_batch(tx_ring, chunk.cnt, context->info, kbuf);
 	spin_unlock_bh(&tx_ring->lock);
@@ -7985,9 +8004,7 @@ long ps_ioctl(struct file *filp,
 	int ret = 0;
 	struct ps_context *context;
 
-	/*
-	printk("ps_ioctl called() cmd=%u arg=%lu\n", cmd, arg);
-	*/
+	//printk("ps_ioctl called() filp=%x cmd=%u arg=%lu\n", filp, cmd, arg);
 
 	context = filp->private_data;
 	if (!context)

@@ -224,14 +224,16 @@ void echo()
 
 
 
-	chunk.cnt = 2; // Change this chunk size to improve TX performance --Kay
+	chunk.cnt = 1024; // Change this chunk size to improve TX performance --Kay
 	chunk.recv_blocking = 1;
+	pktdata = prep_next_skb(fct, &pktlen);
+
 
 	gettimeofday(&startime, NULL);
-	//for (;;) {
+	for (;;) {
 // ===========================================================
+		printf("111\n");
 		for (i=0; i < chunk.cnt; i++) {
-			pktdata = prep_next_skb(fct, &pktlen);
 			chunk.info[i].offset = i * PS_MAX_PACKET_SIZE;
 			chunk.info[i].len = pktlen;
 			memcpy_aligned(chunk.buf + chunk.info[i].offset,
@@ -242,7 +244,7 @@ void echo()
 // ===========================================================
 		int ret = ps_send_chunk(handle, &chunk);
 		assert(ret >= 0);
-	//}
+	}
 
 done:
 	ps_close_handle(handle);
@@ -265,8 +267,9 @@ int main(int argc, char **argv)
 
 	parse_opt(argc, argv);
 
-	//for (i = 0; i < num_cpus; i ++) {
-        {
+	num_cpus = 2;
+	for (i = 0; i < num_cpus; i ++) {
+    //    {
 		my_cpu = i;
 
 	    bind_cpu(i);

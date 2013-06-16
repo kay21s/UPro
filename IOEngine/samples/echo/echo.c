@@ -203,6 +203,8 @@ void echo()
 		assert(ps_attach_rx_device(handle, &queue) == 0);
 	}
 
+	printf ("fd is %x\n", handle->fd);
+
 	if (!working)
 		goto done;
 
@@ -225,12 +227,24 @@ void echo()
 
 			assert(0);
 		}
+		
+		int j;
+		for (j = 0; j < ret; j ++) {
+			char *buf = chunk.buf + chunk.info[i].offset;
+			for (i = 0; i < 32; i ++)
+				printf("%x ", buf[i]);
 
+			printf("\n");
+		}
+		break;
+
+#if 0
 		if (!sink) {
 			chunk.cnt = ret;
 			ret = ps_send_chunk(handle, &chunk);
 			assert(ret >= 0);
 		}
+#endif
 	}
 
 done:
@@ -253,7 +267,7 @@ int main(int argc, char **argv)
 
 	parse_opt(argc, argv);
 
-	for (i = 0; i < num_cpus; i++) {
+	for (i = 0; i < 4; i++) {
 		int ret = fork();
 		assert(ret >= 0);
 

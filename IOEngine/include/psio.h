@@ -274,6 +274,7 @@ int ps_detach_rx_device(struct ps_handle *handle, struct ps_queue *queue);
 int ps_alloc_chunk(struct ps_handle *handle, struct ps_chunk *chunk);
 void ps_free_chunk(struct ps_chunk *chunk);
 int ps_recv_chunk(struct ps_handle *handle, struct ps_chunk *chunk);
+int ps_recv_queue(struct ps_handle *handle, struct ps_chunk *chunk);
 int ps_send_chunk(struct ps_handle *handle, struct ps_chunk *chunk);
 int ps_slowpath_packet(struct ps_handle *handle, struct ps_packet *packet);
 

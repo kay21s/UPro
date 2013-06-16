@@ -3,9 +3,12 @@
 
 #include <stdint.h>
 
-void *cuda_device_mem_alloc(unsigned long size);
-void cuda_device_mem_free(uint8_t *mem);
-void *cuda_pinned_mem_alloc(unsigned long size);
-void cuda_pinned_mem_free(uint8_t *mem);
+void *libgpu_device_mem_alloc(unsigned long size);
+void libgpu_device_mem_free(uint8_t *mem);
+void *libgpu_pinned_mem_alloc(unsigned long size);
+void libgpu_pinned_mem_free(uint8_t *mem);
 
+void libgpu_sync();
+void libgpu_transfer_to_host(void *to, void *from, int size, int stream_id);
+void libgpu_transfer_to_device(void *to, void *from, int size, int stream_id);
 #endif
