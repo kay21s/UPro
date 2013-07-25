@@ -7934,7 +7934,7 @@ int ps_send_chunk(struct ps_context *context, struct ps_chunk __user *chunk_usr)
 		return -EFAULT;
 	}
 
-	printk("-----in ps_send_chunk, queue_id = %d\n", chunk.queue.qidx);
+	// printk("-----in ps_send_chunk, queue_id = %d\n", chunk.queue.qidx);
 	spin_lock_bh(&tx_ring->lock);
 	ret = ixgbe_xmit_batch(tx_ring, chunk.cnt, context->info, kbuf);
 	spin_unlock_bh(&tx_ring->lock);

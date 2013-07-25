@@ -35,13 +35,13 @@ pthread_key_t collector;
 extern upro_config_t *config;
 extern pthread_mutex_t mutex_worker_init;
 
-upro_collector_t collectors[MAX_COLLECTOR_NUM];
+upro_collector_t collectors[MAX_WORKER_NUM];
 
 int upro_collector_batch_init()
 {
 	int i;
-	upro_batch_t *batch = pthread_getspecific(worker_batch_struct);
 
+	upro_batch_t *batch = pthread_getspecific(worker_batch_struct);
 #if defined(TRANSFER_SEPERATE)
 	unsigned char *device_input_buf;
 	unsigned char *device_aes_key_pos;
@@ -155,6 +155,7 @@ int upro_collector_init(upro_collector_context_t *context)
 	/* Init collector batch */
 	upro_collector_batch_init();
 
+#if defined(CPU_AFFINITY)
 	/* set schedule affinity */
 	unsigned long mask = 1 << context->core_id;
 	if (sched_setaffinity(0, sizeof(unsigned long), (cpu_set_t *)&mask) < 0) {
@@ -162,10 +163,10 @@ int upro_collector_init(upro_collector_context_t *context)
 	}
 
 	/* set schedule policy */
-	
 	struct sched_param param;
 	param.sched_priority = 99;
 	pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+#endif
 
 	pthread_mutex_lock(&mutex_worker_init);
 	context->initialized = 1;
@@ -179,7 +180,7 @@ inline int upro_collector_get_attributes(char *aes_key[16], char *aes_iv[], char
 	return 0;
 }
 
-uint64_t swap64(uint64_t v)
+inline uint64_t swap64(uint64_t v)
 {
 	return	((v & 0x00000000000000ffU) << 56) |
 			((v & 0x000000000000ff00U) << 48) |
@@ -205,8 +206,8 @@ int upro_collector_job_add(char *pkt_ptr, int pkt_len, char *payload_ptr, int pa
 	memcpy(buf->hdr_buf + buf->hdr_length, pkt_ptr, hdr_len);
 
 	/* Calculating the information for output buffer */
-	new_job->pkt_ptr = buf->input_buf + buf->buf_length;
-	new_job->pkt_length = ((pkt_len + 3) & (~0x03)) + HMAC_TAG_SIZE; /* 4 bytes aligned + TAG */
+	new_job->payload_ptr = buf->input_buf + buf->buf_length;
+	new_job->payload_length = ((payload_len + 3) & (~0x03)) + HMAC_TAG_SIZE; /* 4 bytes aligned + TAG, for forwarding */
 	new_job->hdr_ptr = buf->hdr_buf + buf->hdr_length;
 	new_job->hdr_length = hdr_len;
 
@@ -329,18 +330,18 @@ done:
 	return payload_ptr;
 }
 
-int established(uint16_t sport, uint16_t dport)
+inline int established(uint16_t sport, uint16_t dport)
 {
 	return 1;
 }
 
-int forward_packet(char *ptr, int len)
+inline int forward_packet(char *ptr, int len)
 {
 	return 1;
 }
 
 /* if is filtered, */
-int rtp_filter(int udp, uint16_t sport, uint16_t dport)
+inline int rtp_filter(int udp, uint16_t sport, uint16_t dport)
 {
 	if (udp) {
 		if (established(sport, dport)) {
@@ -367,7 +368,7 @@ int process_packet(char *ptr, int len)
 		forward_packet(ptr, len);
 		assert(0);
 		//printf("1");
-		//return 0;
+		return 0;
 	}
 
 	assert(len == 1370);
@@ -400,17 +401,14 @@ int upro_collector_read(int queue_id)
 
 	struct ps_chunk chunk;
 	assert(ps_alloc_chunk(&(cc->handle), &chunk) == 0);
+	chunk.recv_blocking = 1;
 
 	gettimeofday(&(cc->startime), NULL);
 
 	for (;;) {
-		chunk.recv_blocking = 1;
 		chunk.cnt = config->io_batch_num;
 
 		ret = ps_recv_chunk(&(cc->handle), &chunk);
-		// assert(chunk.queue.qidx == queue_id);
-		//printf(">>>>>>>>>>>>>>>>>>>>> [Collector %d] received %d packets from ifindex:qid - %d:%d\n", 
-				//queue_id, ret, chunk.queue.ifindex, chunk.queue.qidx);
 
 		if (ret < 0) {
 			if (errno == EINTR)
@@ -424,16 +422,21 @@ int upro_collector_read(int queue_id)
 
 		assert(ret <= 128);
 
+		cc->total_packets += ret;
+		cc->total_bytes += ret * 1370;
+
+#if defined(NOT_COLLECT)
+		continue;
+#endif
+
 		for (i = 0; i < ret; i ++) {
-			assert(chunk.info[i].len == 1370);
-			cc->total_packets += ret;
-			cc->total_bytes += ret * 1370;
+			//assert(chunk.info[i].len == 1370);
 			
 			if (chunk.info[i].len == 1370) {
 				process_packet(chunk.buf + chunk.info[i].offset, chunk.info[i].len);
 			} else {
 				upro_err("%d ", chunk.info[i].len);
-				assert(0);
+				//assert(0);
 			}
 		}
 	}

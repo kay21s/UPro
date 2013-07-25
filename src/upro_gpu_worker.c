@@ -37,7 +37,7 @@ void handle_signal(int signal)
 	total_bytes = total_packets * 1370; // FIXME
 
 	printf("--------------------------------------------------\n");
-	printf("%ld packets transmitted, elapse time : %lf ms, Send Speed : %lf Mpps, %5.2f Gbps\n\n", 
+	printf("%ld packets processed, elapse time : %lf ms, Processing Speed : %lf Mpps, %5.2f Gbps\n\n", 
 			total_packets, subtime,
 			(double)(total_packets) / (double)(subtime * 1000),
 			(double)(total_bytes*8) / (double)(subtime * 1000000));
@@ -49,6 +49,8 @@ int upro_gpu_get_available_buf_id(upro_batch_t *batch)
 {
 	int id;
 
+	/* Because this is called always after upro_gpu_give_to_forwarder(), 
+	 * There will always be at least one available buf for collector */
 	assert(batch->available_buf_id[0] != -1);
 
 #if defined(USE_LOCK)
@@ -117,6 +119,8 @@ void upro_gpu_give_to_forwarder(upro_gpu_worker_t *g, upro_batch_t *batch_set)
 		batch->gpu_buf_id = -1;
 
 		/* Wait for the forwarder to complete last batch forwarding */
+		//if (batch->forwarder_buf_id == -1)
+		//	printf("+++++++++++++++++++++++++ Forwarder not finish +++++++++++++++++++++++++++++\n");
 		while (batch->forwarder_buf_id != -1) ;
 
 		/* Give the buf to forwarder */
@@ -137,10 +141,10 @@ int upro_gpu_worker_init(upro_gpu_worker_t *g, upro_gpu_worker_context_t *contex
 	int i, j;
 	upro_batch_t *batch_set = context->cpu_batch_set;
 
+#if defined(CPU_AFFINITY)
 	/* Set affinity of this gpu worker */
 	unsigned long mask = 1 << context->core_id;
 	if (sched_setaffinity(0, sizeof(unsigned long), (cpu_set_t *)&mask) < 0) {
-		upro_err("Err set affinity in GPU worker\n");
 		assert(0);
 	}
 
@@ -148,9 +152,10 @@ int upro_gpu_worker_init(upro_gpu_worker_t *g, upro_gpu_worker_context_t *contex
 	struct sched_param param;
 	param.sched_priority = 99;
 	pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+#endif
 
 	/* set signal processing function */
-	signal(SIGINT, handle_signal);
+	// signal(SIGINT, handle_signal);
 
 	/* Init GPU buf set pointers */
 	for (i = 0; i < 3; i ++) {
@@ -292,7 +297,7 @@ void *upro_gpu_worker_main(upro_gpu_worker_context_t *context)
 
 		upro_timer_stop(&t);
 		upro_log_msg(&log, "\n%s %lf ms\n", "--- [GPU Worker] Execution Time :", upro_timer_get_total_time(&t));
-		
+
 		/* Tell the forwarders that this batch has been processed */
 		upro_gpu_give_to_forwarder(&g, context->cpu_batch_set);
 	}

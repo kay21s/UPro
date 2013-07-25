@@ -84,6 +84,12 @@ NVCCINCLUDES      := -I$(CUDA_INC_PATH) -I. -I$(CUDA_SDK_DIR)common/inc/
 ################################################################
 
 CFLAGS = -Wall -g -D__USE_GNU -D_GNU_SOURCE -DUPRO_MALLOC -DDEBUG_0 -DTRANSFER_SEPERATE
+CFLAGS += -DCPU_AFFINITY -DAFFINITY_1 -DGPU_RUNNING_CORE=10
+# AFFINITY_1: collector[0,1,2,3] forwarders[4,5,6,7]
+# AFFINITY_2: collector[0,2,4,6] forwarders[1,3,5,7]
+# AFFINITY_2: collector[1,3,5,7] forwarders[2,4,6,8]
+CFLAGS += -DNOT_FORWARD_0 -DNOT_COLLECT_0
+
 LIBS = -lrt -lpthread -L../IOEngine/lib -lpsio
 LIBS += -L../libgpucrypto/lib -lgpucrypto 
 
@@ -105,14 +111,14 @@ OBJECT = $(addprefix $(OBJECT_DIR)/, $(OBJECT_FILE))
 all: $(TARGET)
 
 $(TARGET): $(OBJECT) | $(TARGET_DIR) $(OBJECT_DIR)
-	$(CC) $(OBJECT) -o $@ $(LIBS) $(LDFLAGS)
+	$(CC) -pg $(OBJECT) -o $@ $(LIBS) $(LDFLAGS)
 
 $(OBJECT_DIR):
 	mkdir $(OBJECT_DIR)
 
 
 $(OBJECT_DIR)/%.o : %.c
-	$(CC) $(CFLAGS) -I $(HEADER_DIR) -I $(IOENGINE_DIR) -I $(LIBCRYPTO_DIR) $(NVCCINCLUDES) -c $< -o $@
+	$(CC) -pg $(CFLAGS) -I $(HEADER_DIR) -I $(IOENGINE_DIR) -I $(LIBCRYPTO_DIR) $(NVCCINCLUDES) -c $< -o $@
 # -I $(CUDA_INC_PATH) -I $(LIBCRYPTO_DIR)
 
 .PHONY : clean

@@ -8,14 +8,14 @@
 
 
 char fname[QUEUE_NUM][256]={
-	"2pkt1con.pcap",
-	"2pkt1con.pcap",
-	"2pkt1con.pcap",
-	"2pkt1con.pcap",
-	"2pkt1con.pcap",
-	"2pkt1con.pcap",
-	"2pkt1con.pcap",
-	"2pkt1con.pcap",
+	"rtp1.pcap",
+	"rtp1.pcap",
+	"rtp1.pcap",
+	"rtp1.pcap",
+	"rtp1.pcap",
+	"rtp1.pcap",
+	"rtp1.pcap",
+	"rtp1.pcap",
 #if 0
 	"/home/kay/trace/fix_split0.pcap",
 	"/home/kay/trace/fix_split1.pcap",

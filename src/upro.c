@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <time.h>
+#include <errno.h>
 
 #include <signal.h>
 #include <sys/wait.h>
@@ -12,6 +13,7 @@
 
 #include "upro_context.h"
 #include "upro_collector.h"
+#include "upro_forwarder.h"
 #include "upro_transworker.h"
 #include "upro_config.h"
 #include "upro_memory.h"
@@ -24,7 +26,42 @@ upro_batch_t *batch_set;
 upro_config_t *config;
 pthread_mutex_t mutex_worker_init = PTHREAD_MUTEX_INITIALIZER;
 
-extern upro_collector_t collectors[MAX_COLLECTOR_NUM];
+extern upro_collector_t collectors[MAX_WORKER_NUM];
+extern upro_forwarder_t forwarders[MAX_WORKER_NUM];
+
+int upro_init_config()
+{
+	config = (upro_config_t *)upro_mem_calloc(sizeof(upro_config_t));
+
+	config->gpu = 0; // if this need batch processing by GPU
+	config->cpu_worker_num = 4; // Note: This should equal to the setting in IOEngine
+	config->gpu_worker_num = 1;
+	config->worker_num = config->cpu_worker_num + config->gpu_worker_num + 1;
+
+	config->I = 25; // ms
+	//config->I = 44; // ms
+	/* we take 50ms as parameter, for 10Gbps bandwidth,
+	   50ms * 10Gbps = 0.05 * 10^10 bits ~= (<) 62.5 MB.
+	   Take 64 bytes minimum packet size, at most 1 million jobs each batch,
+	   we allocate 1000 jobs at most.
+	   */
+	/* 10Gbps * 20ms = 200Mb = 25MB, 4 worker, each with 6.25MB */
+	config->batch_buf_max_size = 6.25 * 10e6; // byte
+	config->batch_job_max_num = 10e5;
+
+	config->eiu_hdr_len = 42; // eth+ip+udp header max size
+
+	memcpy(config->client_interface, "xge0", sizeof("xge0"));
+	memcpy(config->server_interface, "xge1", sizeof("xge1"));
+
+	config->io_batch_num = 128;
+	config->client_ifindex = -1;
+	config->server_ifindex = -1;
+
+	config->iterations = 20;
+	config->log_sample_num = 100;
+	return 0;
+}
 
 void collector_handle_signal(int signal)
 {
@@ -48,10 +85,10 @@ void collector_handle_signal(int signal)
 
 		total_rx_packets = (cc->handle).rx_packets[config->server_ifindex];
 		total_rx_bytes = (cc->handle).rx_bytes[config->server_ifindex];
-		speed_handle += (double)(total_rx_bytes * 8) / (double) ((subtime.tv_sec * 1000000 + subtime.tv_usec) * 1000),
+		speed_handle += (double)(total_rx_bytes * 8) / (double) ((subtime.tv_sec * 1000000 + subtime.tv_usec) * 1000);
 
 		printf("----------\n");
-		printf("In handle: %ld packets received, elapse time : %lds, Send Speed : %lf Mpps, %5.2f Gbps, Aveage Len. = %ld\n", 
+		printf("In handle: %ld packets received, elapse time : %lds, RX Speed : %lf Mpps, %5.2f Gbps, Aveage Len. = %ld\n", 
 				total_rx_packets, subtime.tv_sec, 
 				(double)(total_rx_packets) / (double) (subtime.tv_sec * 1000000 + subtime.tv_usec),
 				(double)(total_rx_bytes * 8) / (double) ((subtime.tv_sec * 1000000 + subtime.tv_usec) * 1000),
@@ -60,50 +97,64 @@ void collector_handle_signal(int signal)
 		total_rx_packets = cc->total_packets;
 		total_rx_bytes = cc->total_bytes;
 		speed_actual += (double)(total_rx_bytes * 8) / (double) ((subtime.tv_sec * 1000000 + subtime.tv_usec) * 1000),
-		printf("Actual: %ld packets received, elapse time : %lds, Send Speed : %lf Mpps, %5.2f Gbps, Aveage Len. = %ld\n", 
+		printf("Actual: %ld packets received, elapse time : %lds, RX Speed : %lf Mpps, %5.2f Gbps, Aveage Len. = %ld\n", 
 				total_rx_packets, subtime.tv_sec, 
 				(double)(total_rx_packets) / (double) (subtime.tv_sec * 1000000 + subtime.tv_usec),
 				(double)(total_rx_bytes * 8) / (double) ((subtime.tv_sec * 1000000 + subtime.tv_usec) * 1000),
 				total_rx_bytes / total_rx_packets);
 	}
 
+	printf("----------\n");
 	printf("<<< IOEngine handle speed %lf, actual processing speed %lf >>>\n", speed_handle, speed_actual);
 
 	exit(0);
 }
 
-int upro_init_config()
+void forwarder_handle_signal(int signal)
 {
-	config = (upro_config_t *)upro_mem_calloc(sizeof(upro_config_t));
+	int i;
+	struct timeval subtime;
+	uint64_t total_tx_packets = 0, total_tx_bytes = 0;;
+	upro_forwarder_t *cc;
+	double speed_handle = 0;
+	double speed_actual = 0;
 
-	config->gpu = 0; // if this need batch processing by GPU
-	config->cpu_worker_num = 4; // Note: This should equal to the setting in IOEngine
-	config->gpu_worker_num = 1;
-	config->worker_num = config->cpu_worker_num + config->gpu_worker_num + 1;
+	for (i = 0; i < config->cpu_worker_num; i ++) {
+		cc = &(forwarders[i]);
 
-	config->iterations = 20;
-	config->log_sample_num = 100;
-	//config->I = 20; // ms
-	config->I = 30; // ms
-	/* we take 50ms as parameter, for 10Gbps bandwidth,
-	   50ms * 10Gbps = 0.05 * 10^10 bits ~= (<) 62.5 MB.
-	   Take 64 bytes minimum packet size, at most 1 million jobs each batch,
-	   we allocate 1000 jobs at most.
-	   */
-	/* 10Gbps * 20ms = 200Mb = 25MB, 4 worker, each with 6.25MB */
-	config->batch_buf_max_size = 6.25 * 10e6; // byte
-	config->batch_job_max_num = 10e5;
+		gettimeofday(&(cc->endtime), NULL);
+		timersub(&(cc->endtime), &(cc->startime), &(cc->subtime));
+	}
 
-	config->eiu_hdr_len = 42; // eth+ip+udp header max size
+	for (i = 0; i < config->cpu_worker_num; i ++) {
+		cc = &(forwarders[i]);
+		subtime = cc->subtime;
 
-	memcpy(config->client_interface, "xge0", sizeof("xge0"));
-	memcpy(config->server_interface, "xge1", sizeof("xge1"));
+		total_tx_packets = (cc->handle).tx_packets[config->client_ifindex]; //FIXME: change server_ifindex to tx_ifindex
+		total_tx_bytes = (cc->handle).tx_bytes[config->client_ifindex];
+		speed_handle += (double)(total_tx_bytes * 8) / (double) ((subtime.tv_sec * 1000000 + subtime.tv_usec) * 1000);
 
-	config->io_batch_num = 128;
-	config->client_ifindex = -1;
-	config->server_ifindex = -1;
+		printf("----------\n");
+		printf("In handle: %ld packets Sent, elapse time : %lds, Send Speed : %lf Mpps, %5.2f Gbps, Aveage Len. = %ld\n", 
+				total_tx_packets, subtime.tv_sec, 
+				(double)(total_tx_packets) / (double) (subtime.tv_sec * 1000000 + subtime.tv_usec),
+				(double)(total_tx_bytes * 8) / (double) ((subtime.tv_sec * 1000000 + subtime.tv_usec) * 1000),
+				total_tx_bytes / total_tx_packets);
 
-	return 0;
+		total_tx_packets = cc->total_packets;
+		total_tx_bytes = cc->total_bytes;
+		speed_actual += (double)(total_tx_bytes * 8) / (double) ((subtime.tv_sec * 1000000 + subtime.tv_usec) * 1000),
+		printf("Actual: %ld packets Sent, elapse time : %lds, Send Speed : %lf Mpps, %5.2f Gbps, Aveage Len. = %ld\n", 
+				total_tx_packets, subtime.tv_sec, 
+				(double)(total_tx_packets) / (double) (subtime.tv_sec * 1000000 + subtime.tv_usec),
+				(double)(total_tx_bytes * 8) / (double) ((subtime.tv_sec * 1000000 + subtime.tv_usec) * 1000),
+				total_tx_bytes / total_tx_packets);
+	}
+
+	printf("----------\n");
+	printf("<<< IOEngine handle speed %lf, actual processing speed %lf >>>\n", speed_handle, speed_actual);
+
+	exit(0);
 }
 
 /* Init config->client_ifindex, and config->server_ifindex */
@@ -153,6 +204,7 @@ int upro_init_ioengine()
 	}
 	devices_attached[num_devices_attached] = ifindex;
 	config->server_ifindex = ifindex;
+	config->client_ifindex = ifindex;
 	num_devices_attached ++;
 
 	return 0;
@@ -203,8 +255,13 @@ int upro_launch_forwarders()
 
 		context->queue_id = i;
 		context->batch = &(batch_set[i]);
+#if defined(AFFINITY_1)
 		context->core_id = i + config->cpu_worker_num;
-		//context->core_id = i * 2 + 12; // 12,14,16, on the other die
+#elif defined(AFFINITY_2)
+		context->core_id = i * 2 + 1;
+#elif defined(AFFINITY_3)
+		context->core_id = i * 2;
+#endif
 
 		pthread_attr_init(&attr);
 		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
@@ -214,6 +271,45 @@ int upro_launch_forwarders()
 		}
 	}
 	return 0;
+}
+
+void dump(upro_collector_context_t *context)
+{
+	int ret;
+	int queue_id = context->queue_id;
+
+	upro_collector_t *cc = &(collectors[queue_id]); 
+	assert(ps_init_handle(&(cc->handle)) == 0);
+
+	struct ps_queue queue;
+	queue.ifindex = config->server_ifindex;
+	queue.qidx = queue_id;
+	assert(ps_attach_rx_device(&(cc->handle), &queue) == 0);
+	printf("[Collector %d] is attaching if:queue %d:%d ...\n", queue_id, queue.ifindex, queue.qidx);
+
+	struct ps_chunk chunk;
+	assert(ps_alloc_chunk(&(cc->handle), &chunk) == 0);
+	chunk.recv_blocking = 1;
+
+	gettimeofday(&(cc->startime), NULL);
+	
+	for (;;) {
+		chunk.cnt = config->io_batch_num;
+
+		ret = ps_recv_chunk(&(cc->handle), &chunk);
+
+		if (ret < 0) {
+			if (errno == EINTR)
+				continue;
+			assert(0);
+		}
+
+		assert(ret <= 128);
+
+		cc->total_packets += ret;
+		cc->total_bytes += ret * 1370;
+		continue;
+	}
 }
 
 int upro_launch_collectors(upro_collector_context_t **collector_context_set)
@@ -231,12 +327,18 @@ int upro_launch_collectors(upro_collector_context_t **collector_context_set)
 
 		context->queue_id = i;
 		context->batch = &(batch_set[i]);
-		//context->core_id = i * 2; // 0, 2, 4...
-		context->core_id = i; // FIXME: why? 0, 1, 2...
+#if defined(AFFINITY_1)
+		context->core_id = i;
+#elif defined(AFFINITY_2)
+		context->core_id = i * 2;
+#elif defined(AFFINITY_3)
+		context->core_id = i * 2 + 1;
+#endif
 
 		pthread_attr_init(&attr);
 		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 		if (pthread_create(&tid, &attr, (void *)upro_collector_main, (void *)context) != 0) {
+		//if (pthread_create(&tid, &attr, (void *)dump, (void *)context) != 0) {
 			printf("pthread_create error!!\n");
 			return -1;
 		}
@@ -256,8 +358,8 @@ int upro_launch_gpu_workers()
 		/* pass a memory block to each worker */
 		context = (upro_gpu_worker_context_t *)upro_mem_malloc(sizeof(upro_gpu_worker_context_t));
 		context->cpu_batch_set = batch_set;
-		//FIXME:context->core_id = config->cpu_worker_num * 2;
-		context->core_id = 10;
+
+		context->core_id = GPU_RUNNING_CORE;
 
 		pthread_attr_init(&attr);
 		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
@@ -271,6 +373,9 @@ int upro_launch_gpu_workers()
 
 int main()
 {
+	int i, ready;
+	upro_collector_context_t *collector_context;
+
 	upro_init_config();
 	upro_init_batch_set();
 	upro_init_thread_keys();
@@ -279,17 +384,16 @@ int main()
 	upro_collector_context_t **collector_context_set;
 	collector_context_set = malloc(config->cpu_worker_num * sizeof(void *));
 
-	//signal(SIGINT, collector_handle_signal);
+	signal(SIGINT, collector_handle_signal);
+	//signal(SIGINT, forwarder_handle_signal);
 
 	/* Launch workers first*/
 	upro_launch_collectors(collector_context_set);
 
+#if 1
 	upro_launch_forwarders();
-	//upro_launch_transworker();
 
 	/* Synchronization, Wait for CPU workers */
-	int i, ready;
-	upro_collector_context_t *collector_context;
 	while (1) {
 		ready = 0;
 
@@ -306,6 +410,7 @@ int main()
 	}
 	printf("--------------------------------------\n");
 	upro_launch_gpu_workers();
+#endif
 
 	while(1) sleep(60);
 	return 0;

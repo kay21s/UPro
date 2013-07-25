@@ -3,6 +3,8 @@
 
 #include "psio.h"
 
+# define MAX_WORKER_NUM 12
+
 typedef struct upro_config_s {
 	unsigned int cpu_worker_num;
 	unsigned int gpu_worker_num;

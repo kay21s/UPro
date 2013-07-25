@@ -29,7 +29,7 @@ int devices_attached[PS_MAX_DEVICES];
 
 struct ps_handle handles[PS_MAX_CPUS];
 
-int my_cpu;
+int my_cpu, my_queue;
 
 struct timeval startime;
 struct timeval endtime;
@@ -49,7 +49,7 @@ int bind_cpu(int cpu)
 
 	n = get_num_cpus();
 
-        if (cpu < 0 || cpu >= (int)n) {
+    if (cpu < 0 || cpu >= (int)n) {
 		errno = -EINVAL;
 		return -1;
 	}
@@ -203,7 +203,7 @@ void echo()
 	for (i = 0; i < num_devices_attached; i++) {
 		working = 1;
 		chunk.queue.ifindex = devices_attached[i];
-		chunk.queue.qidx = my_cpu;
+		chunk.queue.qidx = my_queue;
         printf("attach ifindex : %d\n", devices_attached[i]);
 
 		printf("attaching RX queue xge%d:%d to CPU%d\n", chunk.queue.ifindex, chunk.queue.qidx, my_cpu);
@@ -226,13 +226,13 @@ void echo()
 
 	chunk.cnt = 1024; // Change this chunk size to improve TX performance --Kay
 	chunk.recv_blocking = 1;
+
 	pktdata = prep_next_skb(fct, &pktlen);
 
 
 	gettimeofday(&startime, NULL);
 	for (;;) {
 // ===========================================================
-		printf("111\n");
 		for (i=0; i < chunk.cnt; i++) {
 			chunk.info[i].offset = i * PS_MAX_PACKET_SIZE;
 			chunk.info[i].len = pktlen;
@@ -267,16 +267,21 @@ int main(int argc, char **argv)
 
 	parse_opt(argc, argv);
 
-	num_cpus = 2;
+	num_cpus = 4;
 	for (i = 0; i < num_cpus; i ++) {
-    //    {
-		my_cpu = i;
+		int ret = fork();
+		assert(ret >= 0);
 
-	    bind_cpu(i);
-		signal(SIGINT, handle_signal);
-			
-		echo();
-		return 0;
+		my_cpu = i * 2 + 1;
+		my_queue = i;
+
+		if (ret == 0) {
+			bind_cpu(i);
+			signal(SIGINT, handle_signal);
+
+			echo();
+			return 0;
+		}
 	}
 
 	signal(SIGINT, SIG_IGN);
