@@ -74,21 +74,13 @@ int upro_collector_batch_init()
 
 	for (i = 0; i < 3; i ++) {
 #if defined(TRANSFER_SEPERATE)
-		// 0x00 -- cudaHostAllocDefault, 0x04 -- cudaHostAllocWriteCombined
+		/* Allocate pinned memory: 0x00 -- cudaHostAllocDefault, 0x04 -- cudaHostAllocWriteCombined */
 		cudaHostAlloc((void **)&(batch->buf[i].input_buf), config->batch_buf_max_size, 0x00);
 		cudaHostAlloc((void **)&(batch->buf[i].aes_key_pos), config->batch_job_max_num * AES_KEY_SIZE, 0x04);
 		cudaHostAlloc((void **)&(batch->buf[i].aes_iv_pos), config->batch_job_max_num * AES_IV_SIZE, 0x04);
 		cudaHostAlloc((void **)&(batch->buf[i].pkt_offset_pos), config->batch_job_max_num * PKT_OFFSET_SIZE, 0x04);
 		cudaHostAlloc((void **)&(batch->buf[i].length_pos), config->batch_job_max_num * PKT_LENGTH_SIZE, 0x04);
 		cudaHostAlloc((void **)&(batch->buf[i].hmac_key_pos), config->batch_job_max_num * HMAC_KEY_SIZE, 0x04);
-		/*
-		batch->buf[i].input_buf = malloc(config->batch_buf_max_size);
-		batch->buf[i].aes_key_pos = malloc(config->batch_job_max_num * AES_KEY_SIZE);
-		batch->buf[i].aes_iv_pos = malloc(config->batch_job_max_num * AES_IV_SIZE);
-		batch->buf[i].pkt_offset_pos = malloc(config->batch_job_max_num * PKT_OFFSET_SIZE);
-		batch->buf[i].length_pos = malloc(config->batch_job_max_num * PKT_LENGTH_SIZE);
-		batch->buf[i].hmac_key_pos = malloc(config->batch_job_max_num * HMAC_KEY_SIZE);
-		*/
 
 		batch->buf[i].hdr_buf = malloc(config->batch_job_max_num * config->eiu_hdr_len);
 
@@ -254,11 +246,10 @@ int upro_collector_job_add(char *pkt_ptr, int pkt_len, char *payload_ptr, int pa
 		pad_len = ((pad_len >> 6) + 1) << 6;
 
 	assert(buf->buf_size - buf->buf_length > pad_len);
-	//if (buf->buf_size - buf->buf_length > pad_len)
-	//	return 0;
+	assert(buf->job_num < config->batch_job_max_num);
 
 	/* Add the job */
-	upro_collector_get_attributes((char **)&aes_key,(char **)&aes_iv, (char **)&hmac_key);
+	upro_collector_get_attributes((char **)&aes_key, (char **)&aes_iv, (char **)&hmac_key);
 
 	memcpy((uint8_t *)(buf->aes_key_pos) + AES_KEY_SIZE * job_num, aes_key, AES_KEY_SIZE);
 	memcpy((uint8_t *)(buf->aes_iv_pos) + AES_IV_SIZE * job_num, aes_iv, AES_IV_SIZE);
@@ -266,12 +257,21 @@ int upro_collector_job_add(char *pkt_ptr, int pkt_len, char *payload_ptr, int pa
 	((uint16_t *)(buf->length_pos))[job_num] = payload_len;
 	memcpy((uint8_t *)(buf->hmac_key_pos) + HMAC_KEY_SIZE * job_num, hmac_key, HMAC_KEY_SIZE);
 
+	/*
+			packet_write(buf->input_buf + buf->buf_length, 100, fd);
+			fprintf(fd, "\n-----------------------\n");
+			char *pos = buf->input_buf + buf->buf_length;
+			if (*((int *)(pos + 2)) != 0x10f20100) {
+				fprintf(fd, "\n+++++++++++++++++++++%d %x\n\n", *((int *)(pos + 2)), *((int *)(pos + 2)));
+			}
+	*/
+
 	/* Update batch parameters */
+#if !defined(COLLECTOR_PERFORMANCE_TEST)
 	buf->job_num ++;
 	buf->buf_length += pad_len;
 	buf->hdr_length += hdr_len;
-
-	assert (buf->buf_length < buf->buf_size && buf->job_num < config->batch_job_max_num);
+#endif
 
 	return 0;
 }
@@ -358,30 +358,37 @@ int process_packet(char *ptr, int len)
 	char *payload_ptr;
 	upro_batch_t *batch = pthread_getspecific(worker_batch_struct);
 
-	/* Get the payload pointer and the length,
-	 * and get rid of the ethernet header */
+	/* Get the payload pointer and the length, and get rid of the ethernet header */
 	payload_ptr = get_payload(ptr, len, &payload_len, &udp, &sport, &dport);
 
 	/* if it is not rtp packets to be encrypted, it is forwarded directly */
 	ret = rtp_filter(udp, sport, dport);
 	if (ret) {
 		forward_packet(ptr, len);
-		assert(0);
-		//printf("1");
+		//assert(0);
+		printf(">_<!\n");
 		return 0;
 	}
 
-	assert(len == 1370);
+	//assert(len == 1370);
 	/* eth_hdr + ip_hdr + udp_hdr = 42 in general */
 	assert(payload_len == len - 42);
-	//printf("payload_len = %d, len = %d\n", payload_len, len);
 
-	/* Lock, we do not permit GPU worker to enter */
+	/* Lock, we do not permit GPU worker to enter *
+	 * Add this job into batch */
 	///////////////////////////////////////////////////////////
+#if defined(USE_LOCK)
 	pthread_mutex_lock(&(batch->mutex_batch_launch));
-	/* Add this job into batch */
 	upro_collector_job_add(ptr, len, payload_ptr, payload_len);
 	pthread_mutex_unlock(&(batch->mutex_batch_launch));
+#else
+	int id = batch->collector_buf_id;
+	upro_collector_job_add(ptr, len, payload_ptr, payload_len);
+	if (id != batch->collector_buf_id) {
+		/* GPU Get the buffer when we are adding the job */
+		upro_collector_job_add(ptr, len, payload_ptr, payload_len);
+	}
+#endif
 
 	return 0;
 }
@@ -409,7 +416,6 @@ int upro_collector_read(int queue_id)
 		chunk.cnt = config->io_batch_num;
 
 		ret = ps_recv_chunk(&(cc->handle), &chunk);
-
 		if (ret < 0) {
 			if (errno == EINTR)
 				continue;
@@ -419,7 +425,6 @@ int upro_collector_read(int queue_id)
 			}
 			assert(0);
 		}
-
 		assert(ret <= 128);
 
 		cc->total_packets += ret;
@@ -430,14 +435,10 @@ int upro_collector_read(int queue_id)
 #endif
 
 		for (i = 0; i < ret; i ++) {
-			//assert(chunk.info[i].len == 1370);
-			
-			if (chunk.info[i].len == 1370) {
-				process_packet(chunk.buf + chunk.info[i].offset, chunk.info[i].len);
-			} else {
-				upro_err("%d ", chunk.info[i].len);
-				//assert(0);
+			if (chunk.info[i].len != 1370) {
+				upro_err(">_> length:%d\n", chunk.info[i].len);
 			}
+			process_packet(chunk.buf + chunk.info[i].offset, chunk.info[i].len);
 		}
 	}
 	return 0;

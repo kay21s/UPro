@@ -36,7 +36,6 @@ int upro_init_config()
 	config->gpu = 0; // if this need batch processing by GPU
 	config->cpu_worker_num = 4; // Note: This should equal to the setting in IOEngine
 	config->gpu_worker_num = 1;
-	config->worker_num = config->cpu_worker_num + config->gpu_worker_num + 1;
 
 	config->I = 25; // ms
 	//config->I = 44; // ms
@@ -46,12 +45,13 @@ int upro_init_config()
 	   we allocate 1000 jobs at most.
 	   */
 	/* 10Gbps * 20ms = 200Mb = 25MB, 4 worker, each with 6.25MB */
-	config->batch_buf_max_size = 6.25 * 10e6; // byte
+	config->batch_buf_max_size = 10 * 10e6; // byte
 	config->batch_job_max_num = 10e5;
 
 	config->eiu_hdr_len = 42; // eth+ip+udp header max size
 
-	memcpy(config->client_interface, "xge0", sizeof("xge0"));
+	//memcpy(config->client_interface, "xge0", sizeof("xge0"));
+	memcpy(config->client_interface, "xge1", sizeof("xge1"));
 	memcpy(config->server_interface, "xge1", sizeof("xge1"));
 
 	config->io_batch_num = 128;
@@ -200,11 +200,11 @@ int upro_init_ioengine()
 	assert (ifindex != -1);
 
 	for (i = 0; i < num_devices_attached; i ++) {
-		assert(devices_attached[i] != ifindex);
+		//assert(devices_attached[i] != ifindex);
 	}
 	devices_attached[num_devices_attached] = ifindex;
 	config->server_ifindex = ifindex;
-	config->client_ifindex = ifindex;
+	//config->client_ifindex = ifindex;
 	num_devices_attached ++;
 
 	return 0;
@@ -261,6 +261,9 @@ int upro_launch_forwarders()
 		context->core_id = i * 2 + 1;
 #elif defined(AFFINITY_3)
 		context->core_id = i * 2;
+#elif defined(AFFINITY_4)
+		int start = config->cpu_worker_num % 2 == 0 ? config->cpu_worker_num+1 : config->cpu_worker_num+2;
+		context->core_id = i + start;
 #endif
 
 		pthread_attr_init(&attr);
@@ -297,7 +300,6 @@ void dump(upro_collector_context_t *context)
 		chunk.cnt = config->io_batch_num;
 
 		ret = ps_recv_chunk(&(cc->handle), &chunk);
-
 		if (ret < 0) {
 			if (errno == EINTR)
 				continue;
@@ -333,6 +335,9 @@ int upro_launch_collectors(upro_collector_context_t **collector_context_set)
 		context->core_id = i * 2;
 #elif defined(AFFINITY_3)
 		context->core_id = i * 2 + 1;
+#elif defined(AFFINITY_4)
+		int start = 1;
+		context->core_id = i + start;
 #endif
 
 		pthread_attr_init(&attr);
@@ -359,7 +364,11 @@ int upro_launch_gpu_workers()
 		context = (upro_gpu_worker_context_t *)upro_mem_malloc(sizeof(upro_gpu_worker_context_t));
 		context->cpu_batch_set = batch_set;
 
-		context->core_id = GPU_RUNNING_CORE;
+#if defined(AFFINITY_4)
+		context->core_id = 0;
+#else
+		context->core_id = 10;
+#endif
 
 		pthread_attr_init(&attr);
 		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
@@ -371,12 +380,32 @@ int upro_launch_gpu_workers()
 	return 0;
 }
 
-int main()
+int upro_parse_option(int argc, char*argv[])
+{
+	int opt;
+	while((opt = getopt(argc, argv, "n:i:")) != -1) {
+		switch(opt) {
+		case 'i':
+			config->I = atoi(optarg);
+			printf("[ARG] Time interval is set to %d ms\n", config->I);
+			break;
+		case 'n':
+			config->cpu_worker_num = atoi(optarg);
+			printf("[ARG] %d workers in total\n", config->cpu_worker_num);
+			break;
+		}
+	}
+
+	return 0;
+}
+
+int main(int argc, char*argv[])
 {
 	int i, ready;
 	upro_collector_context_t *collector_context;
 
 	upro_init_config();
+	upro_parse_option(argc, argv);
 	upro_init_batch_set();
 	upro_init_thread_keys();
 	upro_init_ioengine();
@@ -384,13 +413,15 @@ int main()
 	upro_collector_context_t **collector_context_set;
 	collector_context_set = malloc(config->cpu_worker_num * sizeof(void *));
 
+#if defined(COLLECTOR_PERFORMANCE_TEST)
 	signal(SIGINT, collector_handle_signal);
+#endif
 	//signal(SIGINT, forwarder_handle_signal);
 
 	/* Launch workers first*/
 	upro_launch_collectors(collector_context_set);
 
-#if 1
+#if !defined(COLLECTOR_PERFORMANCE_TEST)
 	upro_launch_forwarders();
 
 	/* Synchronization, Wait for CPU workers */

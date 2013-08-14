@@ -93,12 +93,8 @@ int upro_forwarder_give_available_buffer(int queue_id)
 	pthread_mutex_unlock(&(batch->mutex_available_buf_id));
 
 	//printf("<<< [Forwarder %d] < give available buffer %d\n", queue_id, batch->forwarder_buf_id);
-
-	pthread_mutex_lock(&(batch->mutex_forwarder_buf_id));
 	batch->forwarder_buf_id = -1;
-	pthread_mutex_unlock(&(batch->mutex_forwarder_buf_id));
 #else
-	pthread_mutex_lock(&(batch->mutex_available_buf_id));
 	if (batch->available_buf_id[0] == -1) {
 		batch->available_buf_id[0] = batch->forwarder_buf_id;
 	} else if (batch->available_buf_id[1] == -1) {
@@ -107,7 +103,6 @@ int upro_forwarder_give_available_buffer(int queue_id)
 		printf("Three buffers available\n");
 		assert(0);
 	}
-	pthread_mutex_unlock(&(batch->mutex_available_buf_id));
 
 	batch->forwarder_buf_id = -1;
 #endif
@@ -128,13 +123,27 @@ int upro_forwarder_get_buffer()
 	return 0;
 }
 
+int packet_write(void *ptr, int length, FILE *fd)
+{
+	int i;
+	for (i = 0; i < length/4 + 1; i ++) {
+		fprintf(fd, "%x ", ((int *)ptr)[i]);
+		if (i % 16 == 0) {
+			fprintf(fd, "\n");
+		}
+	}
+	return 0;
+}
+
 /* This function trigger write event of all the jobs in this batch */
 int upro_forwarder_forwarding(int queue_id)
 {
-	int i, this_cnt, total_cnt, ret = 128;
+	int i, this_cnt, total_cnt, ret = config->io_batch_num, job_mark;
 	upro_job_t *this_job;
 	upro_batch_t *batch = pthread_getspecific(worker_batch_struct);
 	upro_batch_buf_t *buf = &(batch->buf[batch->forwarder_buf_id]);
+
+	//FILE *fd = fopen("packet.txt", "w");
 
 	/* Initialize ioengine */
 	upro_forwarder_t *cc = &(forwarders[queue_id]); 
@@ -146,14 +155,13 @@ int upro_forwarder_forwarding(int queue_id)
 	chunk.recv_blocking = 1;
 	chunk.queue.ifindex = config->client_ifindex;
 	chunk.queue.qidx = queue_id;
-	chunk.cnt = 128;
+	chunk.cnt = config->io_batch_num;
 
 	gettimeofday(&(cc->startime), NULL);
 
 	for (;;) {
 		/* Get buffer first */
 		upro_forwarder_get_buffer();
-		//----------------------------------------------
 		
 #if defined(NOT_FORWARD)
 		upro_forwarder_give_available_buffer(queue_id);
@@ -170,19 +178,15 @@ int upro_forwarder_forwarding(int queue_id)
 		}
 
 		total_cnt = buf->job_num;
+		job_mark = 0;
 
 		while (total_cnt > 0) {
 			this_cnt = total_cnt > 128 ? 128 : total_cnt;
 
-			/*
-			this_job = &(buf->job_list[0]);
-			struct iphdr *iph = (struct iphdr *)((uint8_t *)(this_job->hdr_ptr) + 14);
-			iph->tot_len = this_job->payload_length + this_job->hdr_length - 14;
-			*/
-
 			for (i = 0; i < this_cnt; i ++) {
 #if 1
-				this_job = &(buf->job_list[i]);
+				this_job = &(buf->job_list[job_mark + i]);
+
 				struct iphdr *iph = (struct iphdr *)((uint8_t *)(this_job->hdr_ptr) + 14);
 				iph->tot_len = this_job->payload_length + this_job->hdr_length - 14;
 
@@ -197,27 +201,38 @@ int upro_forwarder_forwarding(int queue_id)
 
 				chunk.info[i].offset = i * PS_MAX_PACKET_SIZE;
 				chunk.info[i].len = this_job->payload_length + this_job->hdr_length;
-#endif
+
+				/*
+				fprintf(fd, "\n-------------------- Header\n");
+				packet_write(this_job->hdr_ptr, this_job->hdr_length, fd);
+				fprintf(fd, "\n-------------------- Payload\n");
+				packet_write(this_job->payload_ptr, this_job->payload_length, fd);
+				fprintf(fd, "\n--------------------\n");
+				if (*((int *)(this_job->payload_ptr + 2)) != 0x10f20100) {
+					fprintf(fd, "\n+++++++++++++++++++++%d  %x\n\n", *((int *)(this_job->payload_ptr + 2)), *((int *)(this_job->payload_ptr + 2)));
+				}
+				
+				if (*((int *)(this_job->payload_ptr + 2)) != 0x10f20100) {
+					printf("%d\n", *((int *)(this_job->payload_ptr + 2)));
+				}
+				*/
 			}
 
 			chunk.cnt = this_cnt;
 			ret = ps_send_chunk(&(cc->handle), &chunk);
 			assert(ret >= 0);
 
-			cc->total_packets += ret;
-			cc->total_bytes += ret * 1370;
-
 			total_cnt -= ret;
-			//total_cnt -= 128;
+			job_mark += ret;
 		}
 
+		cc->total_packets += buf->job_num;
+		cc->total_bytes += buf->job_num * 1370;
 
-		//----------------------------------------------
 		/* Give available buffer */
 		upro_forwarder_give_available_buffer(queue_id);
 	}
-
-	//printf("<<< [Forwarder %d] finished forwarding %d\n", queue_id, batch->forwarder_buf_id);
+#endif
 
 	return 0;
 }

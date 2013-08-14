@@ -70,6 +70,8 @@ void upro_log_loop_marker(upro_log_t *log)
 	log->loops ++;
 #if defined(LOG_PRINT)
 	printf("\n---------------------------%d\n", log->loops);
+#elif defined(NO_PRINT)
+	return;
 #endif
 }
 
@@ -77,6 +79,8 @@ void upro_log_msg(upro_log_t *log, const char *format, const char *msg, const do
 {
 #if defined(LOG_PRINT)
 	printf(format, msg, num);
+#elif defined(NO_PRINT)
+	return;
 #else
 	upro_sample_set_msg(&(log->samples[log->idx ++]), format, msg, num);
 	log->loop_entries ++;

@@ -69,7 +69,7 @@ __global__ void aes_ctr_sha1_kernel(
 	uint8_t *in = pkt_offset[idx] + input_buf;
 	uint8_t cc = in[0] & 0x0F; /* Get the number of CSRC identifiers */
 	if (cc != 0) {
-		printf("%d,%d,%d,%d\n", in[0], in[1], in[2], in[3]);
+		//printf("%d,%d,%d,%d\n", in[0], in[1], in[2], in[3]);
 		return;
 	}
 	uint16_t header_len = 12 + 4 * cc; /* Get the total header length */

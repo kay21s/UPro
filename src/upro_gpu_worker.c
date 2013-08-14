@@ -51,7 +51,7 @@ int upro_gpu_get_available_buf_id(upro_batch_t *batch)
 
 	/* Because this is called always after upro_gpu_give_to_forwarder(), 
 	 * There will always be at least one available buf for collector */
-	assert(batch->available_buf_id[0] != -1);
+	//assert(batch->available_buf_id[0] != -1);
 
 #if defined(USE_LOCK)
 	pthread_mutex_lock(&(batch->mutex_available_buf_id));
@@ -60,11 +60,15 @@ int upro_gpu_get_available_buf_id(upro_batch_t *batch)
 	batch->available_buf_id[1] = -1; 
 	pthread_mutex_unlock(&(batch->mutex_available_buf_id));
 #else
-	pthread_mutex_lock(&(batch->mutex_available_buf_id));
-	id = batch->available_buf_id[0];
-	batch->available_buf_id[0] = batch->available_buf_id[1];
-	batch->available_buf_id[1] = -1; 
-	pthread_mutex_unlock(&(batch->mutex_available_buf_id));
+	if (batch->available_buf_id[0] != -1) {
+		id = batch->available_buf_id[0];
+		batch->available_buf_id[0] = -1;
+	} else if (batch->available_buf_id[1] != -1) {
+		id = batch->available_buf_id[1];
+		batch->available_buf_id[1] = -1;
+	} else {
+		assert(0);
+	}
 #endif
 	return id;
 }
@@ -91,16 +95,10 @@ void upro_gpu_get_batch(upro_gpu_worker_t *g, upro_batch_t *batch_set)
 		available_buf_id = upro_gpu_get_available_buf_id(batch);
 
 		batch->gpu_buf_id = batch->collector_buf_id;
-		assert(batch->gpu_buf_id == g->cur_buf_id);
+		//assert(batch->gpu_buf_id == g->cur_buf_id);
 
 		/* Let the collector know the new available buffer transparently */
-#if defined(USE_LOCK)
-		pthread_mutex_lock(&(batch->mutex_batch_launch));
 		batch->collector_buf_id = available_buf_id;
-		pthread_mutex_unlock(&(batch->mutex_batch_launch));
-#else
-		batch->collector_buf_id = available_buf_id;
-#endif
 
 		/* For statistic */
 		g->total_bytes += g->bufs[g->cur_buf_id][i]->buf_length;
@@ -124,13 +122,7 @@ void upro_gpu_give_to_forwarder(upro_gpu_worker_t *g, upro_batch_t *batch_set)
 		while (batch->forwarder_buf_id != -1) ;
 
 		/* Give the buf to forwarder */
-#if defined(USE_LOCK)
-		pthread_mutex_lock(&(batch->mutex_forwarder_buf_id));
 		batch->forwarder_buf_id = g->cur_buf_id;
-		pthread_mutex_unlock(&(batch->mutex_forwarder_buf_id));
-#else
-		batch->forwarder_buf_id = g->cur_buf_id;
-#endif
 	}
 
 	return ;
@@ -155,7 +147,7 @@ int upro_gpu_worker_init(upro_gpu_worker_t *g, upro_gpu_worker_context_t *contex
 #endif
 
 	/* set signal processing function */
-	// signal(SIGINT, handle_signal);
+	signal(SIGINT, handle_signal);
 
 	/* Init GPU buf set pointers */
 	for (i = 0; i < 3; i ++) {
@@ -211,19 +203,26 @@ void *upro_gpu_worker_main(upro_gpu_worker_context_t *context)
 	/* Timers for each kernel launch */
 	upro_timer_restart(&loopcounter);
 	
+	i = 0;
 	for (;;) {
-	//for (i = 0; i < 10; i ++) {
 		upro_log_loop_marker(&log);
+
+		i ++;
+		if (upro_unlikely(i == 200)) {
+			printf(" ---------------------------------------------------------------------------------------------------------\n");
+			upro_timer_restart(&counter);
+			total_packets = 0;
+		}
 
 		//////////////////////////////////////////
 		/* This is a CPU/GPU synchronization point */
 		do {
 			elapsed_time = upro_timer_get_elapsed_time(&loopcounter);
-			if (elapsed_time - config->I > 0.1) { // surpassed the time point more than 1 ms
+			if (elapsed_time - config->I > 0.01) { // surpassed the time point more than 1 ms
 				upro_log_msg(&log, "\n%s %lf\n", "--- [GPU Worker] Time point lost! : ", elapsed_time);
 				// assert(0);
 			}
-		} while ((double)(config->I) - elapsed_time > 0.1);
+		} while ((double)(config->I) - elapsed_time > 0.01);
 
 		upro_log_msg(&log, "%s %lf\n", "--- [GPU Worker] Time point arrived : ", elapsed_time);
 		//////////////////////////////////////////
@@ -238,15 +237,14 @@ void *upro_gpu_worker_main(upro_gpu_worker_context_t *context)
 		for (id = 0; id < config->cpu_worker_num; id ++) {
 			buf = g.bufs[g.cur_buf_id][id];
 
+			total_packets += buf->job_num;
+
+#if defined(NOT_GPU)
+			continue;
+#endif
 			if (buf->job_num == 0) {
 				continue;
-			} else {
-				printf("%d,", buf->job_num);
-				if (upro_unlikely(start == 0))	{
-					upro_timer_restart(&counter);
-					start = 1;
-				}
-			}
+			} 
 
 			// FOR DEBUG 
 			/*
@@ -261,10 +259,6 @@ void *upro_gpu_worker_main(upro_gpu_worker_context_t *context)
 				
 			}
 			*/
-
-
-			/* Statistic */
-			total_packets += buf->job_num;
 
 #if defined(TRANSFER_SEPERATE)
 			cudaMemcpyAsync(buf->input_buf_d, buf->input_buf, buf->buf_length, cudaMemcpyHostToDevice, stream[id]);
