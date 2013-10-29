@@ -1,6 +1,6 @@
-GPUCRYPTO_DIR = ./
+CC = gcc
 
-####################################################
+################################################################
 # OS Name (Linux or Darwin)
 OSUPPER = $(shell uname -s 2>/dev/null | tr [:lower:] [:upper:])
 OSLOWER = $(shell uname -s 2>/dev/null | tr [:upper:] [:lower:])
@@ -24,9 +24,11 @@ endif
 DARWIN = $(strip $(findstring DARWIN, $(OSUPPER)))
 
 # Location of the CUDA Toolkit binaries and libraries
-CUDA_PATH       ?= /usr/local/cuda-5.5
+CUDA_PATH       ?= /usr/local/cuda-5.0
 CUDA_INC_PATH   ?= $(CUDA_PATH)/include
 CUDA_BIN_PATH   ?= $(CUDA_PATH)/bin
+CUDA_SDK_DIR = /home/$(USER)/NVIDIA_CUDA-5.0_Samples/
+
 ifneq ($(DARWIN),)
   CUDA_LIB_PATH  ?= $(CUDA_PATH)/lib
 else
@@ -39,7 +41,6 @@ endif
 
 # Common binaries
 NVCC            ?= $(CUDA_BIN_PATH)/nvcc
-GCC             := gcc
 
 # CUDA code generation flags
 GENCODE_SM20    := -gencode arch=compute_20,code=sm_20
@@ -78,54 +79,54 @@ endif
 
 
 # Common includes and paths for CUDA
-NVCCINCLUDES      := -I$(CUDA_INC_PATH) -I. -I/usr/local/cuda-5.5/samples/common/inc/
+NVCCINCLUDES      := -I$(CUDA_INC_PATH) -I. -I$(CUDA_SDK_DIR)common/inc/
 
-####################################################
+################################################################
 
+CFLAGS = -Wall -g -D__USE_GNU -D_GNU_SOURCE -DUPRO_MALLOC -DDEBUG_0 -DTRANSFER_SEPERATE
+# AFFINITY_1: collector[0,1,2,3] forwarders[4,5,6,7]
+# AFFINITY_2: collector[0,2,4,6] forwarders[1,3,5,7]
+# AFFINITY_3: collector[1,3,5,7] forwarders[2,4,6,8]
+# AFFINITY_4: collector[1,2,3,4,..] forwarders[5,6,7,8,..] gpu_worker[0]
+CFLAGS += -DCPU_AFFINITY -DAFFINITY_4
+CFLAGS += -DNOT_FORWARD_0 -DNOT_GPU_0 -DNOT_COLLECT_0 
+CFLAGS += -DCOLLECTOR_PERFORMANCE_TEST_0
+CFLAGS += -DUSE_LOCK_0 -DMEMCPY_C_0 -DMEMCPY_SSE_0
 
-OBJS_DIR = objs
-TARGET_DIR = lib
-TARGET_FILE = libgpucrypto.a
+LIBS = -lrt -lpthread -L../IOEngine/lib -lpsio
+LIBS += -L../libgpucrypto/lib -lgpucrypto 
+
+HEADER_DIR = ./include 
+IOENGINE_DIR = ../IOEngine/include
+LIBCRYPTO_DIR = ../libgpucrypto
+OBJECT_DIR = objs
+TARGET_DIR = .
+
+TARGET_FILE = upro 
 TARGET = $(addprefix $(TARGET_DIR)/, $(TARGET_FILE))
 
-.SUFFIXES : .cu .c .o
-
-CU_SRC_FILES = $(wildcard *.cu)
-CC_SRC_FILES = $(wildcard *.c)
+SOURCE_FILES = $(wildcard *.c)
 HEADER_FILES = $(wildcard *.h) $(wildcard *.h)
+OBJECT_FILE = $(SOURCE_FILES:.c=.o)
 
-SRC_FILES = $(CU_SRC_FILES) $(CC_SRC_FILES)
-OBJS_FILE = $(CU_SRC_FILES:.cu=.o) $(CC_SRC_FILES:.c=.o)
+OBJECT = $(addprefix $(OBJECT_DIR)/, $(OBJECT_FILE))
 
-OBJS = $(addprefix $(OBJS_DIR)/, $(OBJS_FILE))
-DEPS = Makefile.dep
+all: $(TARGET)
 
-all: $(TARGET) 
+$(TARGET): $(OBJECT) | $(TARGET_DIR) $(OBJECT_DIR)
+	$(CC) -pg $(OBJECT) -o $@ $(LIBS) $(LDFLAGS)
 
-$(TARGET): $(DEPS) $(OBJS) | $(TARGET_DIR) $(OBJS_DIR)
-	ar rcs $@ $(OBJS)
+$(OBJECT_DIR):
+	mkdir $(OBJECT_DIR)
 
-$(TARGET_DIR):
-	mkdir $(TARGET_DIR)
 
-$(OBJS_DIR):
-	mkdir $(OBJS_DIR)
-
-$(DEPS): $(SRC_FILES) $(HEADER_FILES)
-	$(CC) -MM -MP -x c++ $(CU_SRC_FILES) $(CC_SRC_FILES) | sed 's![^:]*.o:!objs/&!g' > Makefile.dep
-
-$(OBJS_DIR)/%.o : %.c
-	$(GCC) $(CCFLAGS) $(NVCCINCLUDES) -c $< -o $@
-
-$(OBJS_DIR)/%.o : %.cu
-	$(NVCC) $(NVCCFLAGS) $(GENCODE_FLAGS) $(NVCCINCLUDES) -c $< -o $@
+$(OBJECT_DIR)/%.o : %.c
+	$(CC) -pg $(CFLAGS) -I $(HEADER_DIR) -I $(IOENGINE_DIR) -I $(LIBCRYPTO_DIR) $(NVCCINCLUDES) -c $< -o $@
+# -I $(CUDA_INC_PATH) -I $(LIBCRYPTO_DIR)
 
 .PHONY : clean
-
-
 clean:
-	rm -f $(TARGET) $(OBJS) $(DEPS)
+	rm -rf $(TARGET) $(OBJECT)
 
-ifneq ($(MAKECMDGOALS), clean)
--include $(DEPS)
-endif
+doc: $(SOURCE_FILES) doxygen.config
+	doxygen doxygen.config

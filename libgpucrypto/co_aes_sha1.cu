@@ -25,6 +25,7 @@ __global__ void aes_ctr_sha1_kernel(
 /**************************************************************************
   AES Encryption is started first
  ***************************************************************************/
+#if 1
 	__shared__ uint32_t shared_Te0[256];
 	__shared__ uint32_t shared_Te1[256];
 	__shared__ uint32_t shared_Te2[256];
@@ -135,10 +136,11 @@ __global__ void aes_ctr_sha1_kernel(
 	}
 
 	__syncthreads();
-
+#endif
 /**************************************************************************
   AES Encryption completed, Now we start SHA-1 Calculation
  ***************************************************************************/
+#if 0
 	uint32_t w_register[16];
 
 	uint32_t *w = w_register;
@@ -201,7 +203,7 @@ __global__ void aes_ctr_sha1_kernel(
 	*(uint16_t *)(sha1_out+2)  = ((uint16_t *)&temp)[0];
 
 	__syncthreads();
-
+#endif
 	// Now we set the checkbits
 	//*(checkbits + idx) = 1;
 	return;

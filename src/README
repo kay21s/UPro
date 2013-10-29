@@ -1,0 +1,30 @@
+An SRTP Reverse Proxy
+
+RTP -----------AES-CTR/HMAC-SHA1----------------> SRTP
+
+
+1) Options in Makefile
+
+CPU_AFFINITY: Set CPU Affinity
+AFFINITY_1:    collector[0,1,2,3] forwarders[4,5,6,7]  +
+AFFINITY_2:    collector[0,2,4,6] forwarders[1,3,5,7]  |--- gpu_worker[10]
+AFFINITY_3:    collector[1,3,5,7] forwarders[2,4,6,8]  +
+AFFINITY_4:    collector[1,2,3,4,..] forwarders[5,6,7,8,..] gpu_worker[0]
+
+NOT_COLLECT:   do not copy the packets into buffer
+NOT_GPU:       gpu just handles packets to forwarder, without processing with GPU
+NOT_FORWARD:   forwarder just mark the buffer as available, without forwarding
+
+COLLECTOR_PERFORMANCE_TEST:   evaluate the performance of collector, packets are copied to a specified location (Memcpy, destination without cache miss). GPU worker and Forwarder will not be launched.
+NOT_GPU+NOT_FORWARD:          evaluate the performance of collector, each packet is copied to a differnt location (Memcpy, destination always cache miss).
+
+
+2) Options in upro.c (config)
+
+Through command line : ./upro -i 25 -n 4  # 25ms, cpu_worker_num = 4
+
+I : GPU batch time
+cpu_worker_num : Collector-Forwarder pair number
+gpu_worker_num : Currently always 1
+client_interface/server_interface : If they are the same, the proxy forwards packets through the port where it receives them. (xge0/xge1)
+io_batch_num   : For IOEngine, packet number in each batch

@@ -1,0 +1,16 @@
+objs/aes.o: aes.cu aes_core.h
+
+aes_core.h:
+objs/co_aes_sha1.o: co_aes_sha1.cu aes_core.h sha1.h crypto_size.h
+
+aes_core.h:
+
+sha1.h:
+
+crypto_size.h:
+objs/sha1.o: sha1.cu sha1.h crypto_size.h
+
+sha1.h:
+
+crypto_size.h:
+objs/crypto_mem.o: crypto_mem.c
